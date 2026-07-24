@@ -1,11 +1,26 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import type {
   HttpMethod,
   RestRequestSnapshot,
   RestResponse,
 } from "./domain/rest";
+import type {
+  WorkspaceCollection,
+  WorkspaceGitState,
+  WorkspaceSummary,
+} from "./domain/workspace";
 import { sendRestRequest } from "./services/restRequests";
+import {
+  activateWorkspace,
+  createWorkspace,
+  getActiveWorkspace,
+  listWorkspaces,
+  loadWorkspaceCollections,
+  renameWorkspace,
+  selectWorkspaceDirectory,
+  WorkspaceServiceError,
+} from "./services/workspaces";
 
 type IconName =
   | "archive"
@@ -33,7 +48,7 @@ interface RequestExample {
   body: string;
 }
 
-const requests: RequestExample[] = [
+const initialRequests: RequestExample[] = [
   {
     id: "todo",
     name: "Todo details",
@@ -59,6 +74,15 @@ const requests: RequestExample[] = [
     body: '{\n  "title": "GetRest request",\n  "body": "Sent by the native Rust engine",\n  "userId": 1\n}',
   },
 ];
+
+const emptyRequest: RequestExample = {
+  id: "",
+  name: "No request selected",
+  method: "GET",
+  path: "",
+  collection: "",
+  body: "",
+};
 
 const methods: HttpMethod[] = [
   "GET",
@@ -188,8 +212,60 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function workspaceStatusLabel(state?: WorkspaceGitState): string {
+  const labels: Record<WorkspaceGitState, string> = {
+    localOnly: "Local only",
+    clean: "Up to date",
+    changes: "Changes not committed",
+    unavailable: "Workspace unavailable",
+  };
+  return state ? labels[state] : "No workspace";
+}
+
+function isHttpMethod(value: string): value is HttpMethod {
+  return methods.some((method) => method === value);
+}
+
+function collectionsFromRequests(
+  requests: RequestExample[],
+): WorkspaceCollection[] {
+  const grouped = new Map<string, RequestExample[]>();
+  for (const request of requests) {
+    const existing = grouped.get(request.collection) ?? [];
+    existing.push(request);
+    grouped.set(request.collection, existing);
+  }
+  return [...grouped.entries()].map(([name, collectionRequests]) => ({
+    name,
+    requests: collectionRequests.map(
+      ({ id, name: requestName, method, path, body }) => ({
+        id,
+        name: requestName,
+        method,
+        path,
+        body,
+      }),
+    ),
+  }));
+}
+
+function requestsFromCollections(
+  collections: WorkspaceCollection[],
+): RequestExample[] {
+  return collections.flatMap((collection) =>
+    collection.requests
+      .filter((request) => isHttpMethod(request.method))
+      .map((request) => ({
+        ...request,
+        method: request.method as HttpMethod,
+        collection: collection.name,
+      })),
+  );
+}
+
 function App() {
   const [selectedId, setSelectedId] = useState("todo");
+  const [requests, setRequests] = useState<RequestExample[]>(initialRequests);
   const [requestTab, setRequestTab] =
     useState<(typeof requestTabs)[number]>("Body");
   const [responseTab, setResponseTab] =
@@ -205,11 +281,55 @@ function App() {
   const [lastRequest, setLastRequest] = useState<RestRequestSnapshot | null>(
     null,
   );
+  const [workspace, setWorkspace] = useState<WorkspaceSummary | null>(null);
+  const [knownWorkspaces, setKnownWorkspaces] = useState<WorkspaceSummary[]>(
+    [],
+  );
+  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
+  const [workspaceDialogMode, setWorkspaceDialogMode] = useState<
+    "manage" | "create"
+  >("create");
+  const [workspaceDirectory, setWorkspaceDirectory] = useState("");
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [workspaceContent, setWorkspaceContent] = useState<"move" | "empty">(
+    "move",
+  );
+  const [gitIdentityRequired, setGitIdentityRequired] = useState(false);
+  const [gitAuthorName, setGitAuthorName] = useState("");
+  const [gitAuthorEmail, setGitAuthorEmail] = useState("");
+  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
+  const [isRenamingWorkspace, setIsRenamingWorkspace] = useState(false);
+  const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
   const selected =
-    requests.find((request) => request.id === selectedId) ?? requests[0];
+    requests.find((request) => request.id === selectedId) ??
+    requests[0] ??
+    emptyRequest;
   const [methodDraft, setMethodDraft] = useState<HttpMethod>(selected.method);
   const [urlDraft, setUrlDraft] = useState(selected.path);
   const [bodyDraft, setBodyDraft] = useState(selected.body);
+
+  useEffect(() => {
+    let active = true;
+    getActiveWorkspace()
+      .then(async (storedWorkspace) => {
+        if (!active) return;
+        setWorkspace(storedWorkspace);
+        setWorkspaceName(storedWorkspace?.name ?? "");
+        if (storedWorkspace) {
+          const storedCollections = await loadWorkspaceCollections(
+            storedWorkspace.id,
+          );
+          if (active) applyCollections(storedCollections);
+        }
+      })
+      .catch(() => {
+        if (active) setWorkspace(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const visibleRequests = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -220,7 +340,7 @@ function App() {
             .includes(query),
         )
       : requests;
-  }, [search]);
+  }, [requests, search]);
 
   const selectRequest = (request: RequestExample) => {
     setSelectedId(request.id);
@@ -241,7 +361,7 @@ function App() {
     );
 
   const sendRequest = async () => {
-    if (isSending) return;
+    if (isSending || !selected.id) return;
     setIsSending(true);
     setResponse(null);
     setRequestError(null);
@@ -281,11 +401,166 @@ function App() {
   const copyResponse = async () => {
     if (response) await navigator.clipboard?.writeText(response.body);
   };
+
+  const applyRequests = (nextRequests: RequestExample[]) => {
+    setRequests(nextRequests);
+    const first = nextRequests[0] ?? emptyRequest;
+    setSelectedId(first.id);
+    setMethodDraft(first.method);
+    setUrlDraft(first.path);
+    setBodyDraft(first.body);
+    setResponse(null);
+    setRequestError(null);
+    setLastRequest(null);
+  };
+
+  const applyCollections = (collections: WorkspaceCollection[]) => {
+    applyRequests(requestsFromCollections(collections));
+  };
+
+  const openWorkspaceDialog = async () => {
+    setWorkspaceDialogOpen(true);
+    setWorkspaceDialogMode(workspace ? "manage" : "create");
+    setWorkspaceDirectory("");
+    setWorkspaceError(null);
+    setWorkspaceName(workspace?.name ?? "");
+    setWorkspaceContent(requests.length > 0 ? "move" : "empty");
+    setGitIdentityRequired(false);
+    setGitAuthorName("");
+    setGitAuthorEmail("");
+    try {
+      setKnownWorkspaces(await listWorkspaces());
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The saved workspaces could not be loaded.",
+      );
+    }
+  };
+
+  const beginNewWorkspace = () => {
+    setWorkspaceDialogMode("create");
+    setWorkspaceDirectory("");
+    setWorkspaceError(null);
+    setWorkspaceContent(requests.length > 0 ? "move" : "empty");
+    setGitIdentityRequired(false);
+  };
+
+  const chooseWorkspaceFolder = async () => {
+    setWorkspaceError(null);
+    try {
+      const directory = await selectWorkspaceDirectory();
+      if (directory) {
+        setWorkspaceDirectory(directory);
+        setGitIdentityRequired(false);
+      }
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The folder could not be selected.",
+      );
+    }
+  };
+
+  const submitWorkspace = async () => {
+    if (!workspaceDirectory || isCreatingWorkspace) return;
+    setIsCreatingWorkspace(true);
+    setWorkspaceError(null);
+
+    try {
+      const createdWorkspace = await createWorkspace(
+        workspaceDirectory,
+        gitIdentityRequired
+          ? { name: gitAuthorName, email: gitAuthorEmail }
+          : null,
+        workspaceContent === "move"
+          ? collectionsFromRequests(
+              requests.map((request) =>
+                request.id === selectedId
+                  ? {
+                      ...request,
+                      method: methodDraft,
+                      path: urlDraft,
+                      body: bodyDraft,
+                    }
+                  : request,
+              ),
+            )
+          : [],
+      );
+      setWorkspace(createdWorkspace);
+      setWorkspaceName(createdWorkspace.name);
+      if (workspaceContent === "empty") applyRequests([]);
+      setWorkspaceDialogOpen(false);
+    } catch (error) {
+      if (
+        error instanceof WorkspaceServiceError &&
+        error.code === "git_identity_required"
+      ) {
+        setGitIdentityRequired(true);
+      }
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace could not be created.",
+      );
+    } finally {
+      setIsCreatingWorkspace(false);
+    }
+  };
+
+  const submitWorkspaceRename = async () => {
+    if (!workspace || isRenamingWorkspace) return;
+    setIsRenamingWorkspace(true);
+    setWorkspaceError(null);
+    try {
+      const renamed = await renameWorkspace(workspace.id, workspaceName);
+      setWorkspace(renamed);
+      setKnownWorkspaces((current) =>
+        current.map((item) => (item.id === renamed.id ? renamed : item)),
+      );
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace could not be renamed.",
+      );
+    } finally {
+      setIsRenamingWorkspace(false);
+    }
+  };
+
+  const switchWorkspace = async (id: string) => {
+    if (workspace?.id === id || isSwitchingWorkspace) return;
+    setIsSwitchingWorkspace(true);
+    setWorkspaceError(null);
+    try {
+      const activated = await activateWorkspace(id);
+      const collections = await loadWorkspaceCollections(id);
+      setWorkspace(activated);
+      setWorkspaceName(activated.name);
+      applyCollections(collections);
+      setWorkspaceDialogOpen(false);
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace could not be opened.",
+      );
+    } finally {
+      setIsSwitchingWorkspace(false);
+    }
+  };
+
   const bodyLines = (bodyDraft || "No body for this request.").split("\n");
   const responseText = response ? formatResponseBody(response) : "";
   const requestHeaderCount =
     bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft) ? 1 : 0;
-  const collections = ["Public API"];
+  const collections = [
+    ...new Set(requests.map((request) => request.collection)),
+  ];
 
   const requestContent = () => {
     if (requestTab === "Body")
@@ -346,11 +621,16 @@ function App() {
           <span className="brand-name">GetRest</span>
           <span className="app-stage">preview</span>
         </div>
-        <div className="workspace-switcher">
+        <button
+          className="workspace-switcher"
+          onClick={openWorkspaceDialog}
+          title={workspace?.path}
+          type="button"
+        >
           <span className="workspace-dot" />
-          <span>Local workspace</span>
+          <span>{workspace?.name ?? "Create workspace"}</span>
           <Icon name="chevron-down" size={15} />
-        </div>
+        </button>
         <div className="topbar-actions">
           <button
             aria-label="Toggle sidebar"
@@ -465,7 +745,8 @@ function App() {
         </nav>
         <div className="sidebar-footer">
           <button className="branch-button" type="button">
-            <Icon name="archive" size={15} /> Local only
+            <Icon name="archive" size={15} />{" "}
+            {workspaceStatusLabel(workspace?.gitState)}
           </button>
           <button
             aria-label="Workspace settings"
@@ -517,7 +798,11 @@ function App() {
             spellCheck={false}
             value={urlDraft}
           />
-          <button className="send-button" disabled={isSending} type="submit">
+          <button
+            className="send-button"
+            disabled={isSending || !selected.id}
+            type="submit"
+          >
             <span>{isSending ? "Sending" : "Send"}</span>
             <Icon name="send" size={17} />
           </button>
@@ -709,6 +994,220 @@ function App() {
           </span>
         </footer>
       </section>
+      {workspaceDialogOpen && (
+        <div className="modal-backdrop">
+          <section
+            aria-labelledby="workspace-dialog-title"
+            aria-modal="true"
+            className="workspace-dialog"
+            role="dialog"
+          >
+            <header className="workspace-dialog-header">
+              <div>
+                <span className="eyebrow">Local-first workspace</span>
+                <h2 id="workspace-dialog-title">
+                  {workspaceDialogMode === "create"
+                    ? "Create workspace"
+                    : "Workspaces"}
+                </h2>
+              </div>
+              <button
+                aria-label="Close workspace dialog"
+                className="icon-button workspace-close-button"
+                onClick={() => setWorkspaceDialogOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <div className="workspace-dialog-content">
+              {workspaceDialogMode === "manage" && workspace ? (
+                <>
+                  <div className="workspace-list" aria-label="Saved workspaces">
+                    {knownWorkspaces.map((item) => (
+                      <button
+                        aria-current={
+                          item.id === workspace.id ? "true" : undefined
+                        }
+                        className="workspace-list-item"
+                        disabled={isSwitchingWorkspace}
+                        key={item.id}
+                        onClick={() => switchWorkspace(item.id)}
+                        type="button"
+                      >
+                        <span className="workspace-dot" />
+                        <span>
+                          <strong>{item.name}</strong>
+                          <small>{item.path}</small>
+                        </span>
+                        {item.id === workspace.id && <em>Active</em>}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="workspace-field">
+                    <span>Workspace name</span>
+                    <div>
+                      <input
+                        aria-label="Workspace name"
+                        maxLength={100}
+                        onChange={(event) =>
+                          setWorkspaceName(event.target.value)
+                        }
+                        value={workspaceName}
+                      />
+                      <button
+                        className="secondary-button"
+                        disabled={
+                          isRenamingWorkspace ||
+                          !workspaceName.trim() ||
+                          workspaceName.trim() === workspace.name
+                        }
+                        onClick={submitWorkspaceRename}
+                        type="button"
+                      >
+                        {isRenamingWorkspace ? "Saving…" : "Rename"}
+                      </button>
+                    </div>
+                  </label>
+                  <button
+                    className="new-workspace-card"
+                    onClick={beginNewWorkspace}
+                    type="button"
+                  >
+                    <Icon name="plus" size={18} />
+                    <span>
+                      <strong>Create a new workspace</strong>
+                      <small>Choose another empty, dedicated folder.</small>
+                    </span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p>
+                    Choose an empty folder. GetRest will create a dedicated Git
+                    repository that remains separate from the application
+                    source.
+                  </p>
+                  <label className="workspace-field">
+                    <span>Workspace folder</span>
+                    <div>
+                      <input
+                        aria-label="Workspace folder"
+                        placeholder="No folder selected"
+                        readOnly
+                        value={workspaceDirectory}
+                      />
+                      <button
+                        className="secondary-button"
+                        onClick={chooseWorkspaceFolder}
+                        type="button"
+                      >
+                        Choose folder
+                      </button>
+                    </div>
+                  </label>
+                  <fieldset className="workspace-content-choice">
+                    <legend>Initial content</legend>
+                    <label>
+                      <input
+                        checked={workspaceContent === "move"}
+                        disabled={requests.length === 0}
+                        name="workspace-content"
+                        onChange={() => setWorkspaceContent("move")}
+                        type="radio"
+                      />
+                      <span>
+                        <strong>Move current collections</strong>
+                        <small>
+                          Add {collections.length}{" "}
+                          {collections.length === 1
+                            ? "collection"
+                            : "collections"}{" "}
+                          and {requests.length} requests to the new repository.
+                        </small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        checked={workspaceContent === "empty"}
+                        name="workspace-content"
+                        onChange={() => setWorkspaceContent("empty")}
+                        type="radio"
+                      />
+                      <span>
+                        <strong>Start with an empty workspace</strong>
+                        <small>
+                          Create the repository without collections.
+                        </small>
+                      </span>
+                    </label>
+                  </fieldset>
+                  {gitIdentityRequired && (
+                    <div className="git-identity-fields">
+                      <div className="identity-callout">
+                        Git needs an author for the initial commit. These values
+                        will be stored only in this workspace repository.
+                      </div>
+                      <label className="workspace-field">
+                        <span>Git author name</span>
+                        <input
+                          aria-label="Git author name"
+                          autoComplete="name"
+                          onChange={(event) =>
+                            setGitAuthorName(event.target.value)
+                          }
+                          value={gitAuthorName}
+                        />
+                      </label>
+                      <label className="workspace-field">
+                        <span>Git author email</span>
+                        <input
+                          aria-label="Git author email"
+                          autoComplete="email"
+                          onChange={(event) =>
+                            setGitAuthorEmail(event.target.value)
+                          }
+                          type="email"
+                          value={gitAuthorEmail}
+                        />
+                      </label>
+                    </div>
+                  )}
+                </>
+              )}
+              {workspaceError && (
+                <div aria-live="polite" className="workspace-error">
+                  {workspaceError}
+                </div>
+              )}
+            </div>
+            <footer className="workspace-dialog-actions">
+              <button
+                className="plain-button"
+                onClick={() => setWorkspaceDialogOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              {workspaceDialogMode === "create" && (
+                <button
+                  className="send-button workspace-create-button"
+                  disabled={
+                    !workspaceDirectory ||
+                    isCreatingWorkspace ||
+                    (gitIdentityRequired &&
+                      (!gitAuthorName.trim() || !gitAuthorEmail.trim()))
+                  }
+                  onClick={submitWorkspace}
+                  type="button"
+                >
+                  {isCreatingWorkspace ? "Creating…" : "Create workspace"}
+                </button>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

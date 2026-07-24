@@ -148,9 +148,24 @@ textarea:focus-visible {
 .workspace-switcher {
   justify-self: center;
   gap: 9px;
+  max-width: 360px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   color: #c9d3df;
+  background: transparent;
   font-size: 13px;
   font-weight: 580;
+  cursor: pointer;
+}
+.workspace-switcher:hover {
+  border-color: var(--border);
+  background: var(--hover);
+}
+.workspace-switcher > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .workspace-dot {
   width: 8px;
@@ -815,6 +830,255 @@ kbd {
   opacity: 0;
   pointer-events: none;
 }
+.modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 9, 14, 0.68);
+  backdrop-filter: blur(5px);
+}
+.workspace-dialog {
+  width: min(560px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+.workspace-dialog-header {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+.workspace-dialog-header h2 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+.workspace-close-button {
+  color: #aab5c3;
+  font-size: 22px;
+  font-weight: 300;
+}
+.workspace-dialog-content {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+}
+.workspace-dialog-content > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.workspace-field {
+  display: grid;
+  gap: 7px;
+}
+.workspace-field > span {
+  color: #aab6c5;
+  font-size: 11px;
+  font-weight: 620;
+}
+.workspace-field > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+}
+.workspace-field input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  outline: 0;
+  color: #d2dbe6;
+  background: var(--field);
+  font: 11px var(--mono);
+}
+.workspace-field input:focus {
+  border-color: #3b6658;
+  box-shadow: 0 0 0 2px rgba(103, 232, 182, 0.08);
+}
+.workspace-field input[readonly] {
+  color: var(--muted);
+}
+.workspace-field .secondary-button {
+  height: 38px;
+  margin: 0;
+  white-space: nowrap;
+}
+.workspace-list {
+  display: grid;
+  gap: 7px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.workspace-list-item,
+.new-workspace-card {
+  display: grid;
+  width: 100%;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--surface-recessed);
+  text-align: left;
+}
+.workspace-list-item {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 11px;
+  padding: 10px 12px;
+}
+.workspace-list-item:hover,
+.workspace-list-item[aria-current="true"] {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--field);
+}
+.workspace-list-item > span:nth-child(2),
+.new-workspace-card > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.workspace-list-item strong,
+.new-workspace-card strong {
+  color: #cad4df;
+  font-size: 12px;
+  font-weight: 620;
+}
+.workspace-list-item small,
+.new-workspace-card small {
+  overflow: hidden;
+  color: var(--muted);
+  font: 10px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-list-item em {
+  padding: 3px 7px;
+  border: 1px solid #385849;
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 9px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+.new-workspace-card {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 11px;
+  padding: 12px;
+  border-style: dashed;
+}
+.new-workspace-card:hover {
+  border-color: #3b6658;
+  color: var(--accent);
+  background: rgba(103, 232, 182, 0.035);
+}
+.workspace-content-choice {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.workspace-content-choice legend {
+  margin-bottom: 7px;
+  color: #aab6c5;
+  font-size: 11px;
+  font-weight: 620;
+}
+.workspace-content-choice label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-recessed);
+  cursor: pointer;
+}
+.workspace-content-choice label:has(input:checked) {
+  border-color: #3b6658;
+  background: rgba(103, 232, 182, 0.035);
+}
+.workspace-content-choice label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.workspace-content-choice input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.workspace-content-choice label > span {
+  display: grid;
+  gap: 4px;
+}
+.workspace-content-choice strong {
+  color: #cbd5df;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+.workspace-content-choice small {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.git-identity-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.identity-callout {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border: 1px solid #465344;
+  border-radius: 8px;
+  color: #c6cfae;
+  background: #242a20;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.workspace-error {
+  padding: 10px 12px;
+  border: 1px solid #74454b;
+  border-radius: 8px;
+  color: #ffaaaa;
+  background: #332328;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.workspace-dialog-actions {
+  display: flex;
+  min-height: 62px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-recessed);
+}
+.workspace-dialog-actions .plain-button {
+  padding: 9px 12px;
+  border-radius: 7px;
+  font-size: 11.5px;
+}
+.workspace-create-button {
+  width: auto;
+  min-width: 138px;
+  padding: 0 15px;
+}
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 244px minmax(430px, 1fr) minmax(390px, 0.92fr);
@@ -828,6 +1092,14 @@ kbd {
   .app-stage,
   kbd {
     display: none;
+  }
+}
+@media (max-width: 640px) {
+  .git-identity-fields {
+    grid-template-columns: 1fr;
+  }
+  .identity-callout {
+    grid-column: auto;
   }
 }
 @media (prefers-reduced-motion: reduce) {

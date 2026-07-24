@@ -1,9 +1,20 @@
 mod rest;
+mod workspace;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![rest::send_rest_request])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            rest::send_rest_request,
+            workspace::choose_workspace_directory,
+            workspace::create_workspace,
+            workspace::get_active_workspace,
+            workspace::list_workspaces,
+            workspace::activate_workspace,
+            workspace::rename_workspace,
+            workspace::load_workspace_collections
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

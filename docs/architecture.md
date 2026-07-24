@@ -157,7 +157,10 @@ Every long-running operation must be cancellable and clean up temporary resource
 
 ## Persistence
 
-SQLite is the primary local store for workspaces, collections, environments, request metadata, and history. Schema changes use ordered migrations that can be tested from every previously supported schema version.
+SQLite is the primary local store for the workspace registry, recent usage,
+request metadata, and history. Portable collections and shared environments
+live in the dedicated workspace repository. Schema changes use ordered
+migrations that can be tested from every previously supported schema version.
 
 Credentials and secret environment values must not be stored as plaintext SQLite fields. The database stores stable references to values held in the operating-system credential store:
 
@@ -166,6 +169,33 @@ Credentials and secret environment values must not be stored as plaintext SQLite
 - Secret Service-compatible storage on Linux.
 
 Exports exclude secrets by default. Any explicit secret export must clearly warn the user and require a deliberate action.
+
+## Workspace repositories
+
+Each workspace has a dedicated directory selected by the user and a local Git
+repository initialized by GetRest. A workspace repository is never nested
+inside the GetRest source repository or another project repository.
+
+Version-controlled workspace data includes:
+
+- the versioned `workspace.json` manifest;
+- collections, folders, and request definitions;
+- shared environment definitions and non-secret values;
+- references to secret values held outside Git.
+
+The local SQLite database stores workspace locations, recent usage, history,
+and application state. It does not replace the workspace repository as the
+portable source of truth.
+
+When creating a workspace, the user explicitly chooses whether to include the
+collections currently loaded in the application or start with an empty
+repository. The workspace selector can activate registered workspaces, rename
+the active workspace, or start the creation of another one. Renames update both
+the versioned manifest and the local registry.
+
+A workspace without a Git remote is local-only. A remote can be associated
+later for backup and collaboration. Git commands are executed by the Rust core
+with controlled arguments and never through an arbitrary shell interface.
 
 ## Import and export
 
@@ -230,3 +260,4 @@ Create or update an ADR when a change:
 - [ADR-0003: Local-first SQLite and OS credential stores](decisions/0003-local-first-storage-and-secrets.md)
 - [ADR-0004: Native builds on Windows, macOS, and Ubuntu](decisions/0004-native-cross-platform-builds.md)
 - [ADR-0005: GNU GPL version 3 or later](decisions/0005-gpl-3-or-later.md)
+- [ADR-0006: Dedicated Git repositories for workspaces](decisions/0006-dedicated-git-workspace-repositories.md)
