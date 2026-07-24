@@ -10,8 +10,9 @@ interface is built with React and TypeScript.
 
 > [!NOTE]
 > GetRest is in an early stage of development. The current desktop shell is an
-> interactive prototype, and request execution is not yet connected to the
-> interface.
+> interactive prototype with an initial native REST request flow. Collections,
+> persistence, advanced request options, and the remaining protocols are still
+> under development.
 
 ## Product principles
 

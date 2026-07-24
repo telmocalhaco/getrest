@@ -12,7 +12,10 @@ npm run build
 npm run tauri -- dev
 ```
 
-The current interface is an interactive local prototype. API traffic will be connected through the typed Tauri boundary and Rust engine in a later increment.
+The current interface includes an initial REST request flow through a typed
+Tauri boundary and the native Rust engine. It supports HTTP methods, URL and
+JSON body input, response status, timing, headers, body rendering, a 30-second
+timeout, and a 10 MiB response limit.
 
 ## Recommended IDE Setup
 

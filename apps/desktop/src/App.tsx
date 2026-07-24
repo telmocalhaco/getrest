@@ -1,5 +1,11 @@
 import { useMemo, useState } from "react";
 import "./App.css";
+import type {
+  HttpMethod,
+  RestRequestSnapshot,
+  RestResponse,
+} from "./domain/rest";
+import { sendRestRequest } from "./services/restRequests";
 
 type IconName =
   | "archive"
@@ -18,95 +24,51 @@ type IconName =
   | "search"
   | "send"
   | "sidebar";
-type Method = "GET" | "POST" | "PUT" | "PATCH";
-
 interface RequestExample {
   id: string;
   name: string;
-  method: Method;
+  method: HttpMethod;
   path: string;
   collection: string;
   body: string;
-  status: number;
-  duration: number;
-  size: string;
-  response: object;
 }
 
 const requests: RequestExample[] = [
   {
-    id: "health",
-    name: "Health check",
+    id: "todo",
+    name: "Todo details",
     method: "GET",
-    path: "{{BASE_URL}}/v1/health",
-    collection: "Essentials",
+    path: "https://jsonplaceholder.typicode.com/todos/1",
+    collection: "Public API",
     body: "",
-    status: 200,
-    duration: 38,
-    size: "248 B",
-    response: {
-      status: "healthy",
-      version: "0.1.0",
-      services: { database: "ready", secrets: "ready" },
-    },
   },
   {
-    id: "authenticate",
-    name: "Authenticate",
-    method: "POST",
-    path: "{{BASE_URL}}/v1/authenticate",
-    collection: "Essentials",
-    body: '{\n  "email": "developer@example.com",\n  "password": "{{PASSWORD}}"\n}',
-    status: 200,
-    duration: 94,
-    size: "1.2 KB",
-    response: {
-      user: { id: "usr_local_01", name: "Local developer" },
-      session: { expiresIn: 3600, scope: ["read", "write"] },
-    },
-  },
-  {
-    id: "profile",
-    name: "User profile",
+    id: "posts",
+    name: "Recent posts",
     method: "GET",
-    path: "{{BASE_URL}}/v1/me",
-    collection: "Essentials",
+    path: "https://jsonplaceholder.typicode.com/posts?_limit=5",
+    collection: "Public API",
     body: "",
-    status: 200,
-    duration: 51,
-    size: "684 B",
-    response: {
-      id: "usr_local_01",
-      name: "Local developer",
-      preferences: { locale: "pt-PT", theme: "dark" },
-    },
   },
   {
-    id: "create-project",
-    name: "Create project",
+    id: "create-post",
+    name: "Create post",
     method: "POST",
-    path: "{{BASE_URL}}/v1/projects",
-    collection: "Sandbox",
-    body: '{\n  "name": "GetRest demo",\n  "visibility": "private"\n}',
-    status: 201,
-    duration: 73,
-    size: "512 B",
-    response: { id: "prj_8f31", name: "GetRest demo", visibility: "private" },
-  },
-  {
-    id: "update-project",
-    name: "Update project",
-    method: "PATCH",
-    path: "{{BASE_URL}}/v1/projects/prj_8f31",
-    collection: "Sandbox",
-    body: '{\n  "name": "GetRest desktop"\n}',
-    status: 200,
-    duration: 61,
-    size: "498 B",
-    response: { id: "prj_8f31", name: "GetRest desktop", updated: true },
+    path: "https://jsonplaceholder.typicode.com/posts",
+    collection: "Public API",
+    body: '{\n  "title": "GetRest request",\n  "body": "Sent by the native Rust engine",\n  "userId": 1\n}',
   },
 ];
 
+const methods: HttpMethod[] = [
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+];
 const requestTabs = ["Body", "Params", "Headers", "Auth"] as const;
 const responseTabs = ["Response", "Request", "Headers"] as const;
 
@@ -200,14 +162,34 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   );
 }
 
-function MethodBadge({ method }: { method: Method }) {
+function MethodBadge({ method }: { method: HttpMethod }) {
   return (
     <span className={`method method-${method.toLowerCase()}`}>{method}</span>
   );
 }
 
+function formatResponseBody(response: RestResponse): string {
+  if (!response.body) return "";
+
+  if (response.contentType?.toLowerCase().includes("json")) {
+    try {
+      return JSON.stringify(JSON.parse(response.body), null, 2);
+    } catch {
+      return response.body;
+    }
+  }
+
+  return response.body;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function App() {
-  const [selectedId, setSelectedId] = useState("authenticate");
+  const [selectedId, setSelectedId] = useState("todo");
   const [requestTab, setRequestTab] =
     useState<(typeof requestTabs)[number]>("Body");
   const [responseTab, setResponseTab] =
@@ -218,9 +200,14 @@ function App() {
   );
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [isSending, setIsSending] = useState(false);
-  const [runCount, setRunCount] = useState(0);
+  const [response, setResponse] = useState<RestResponse | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [lastRequest, setLastRequest] = useState<RestRequestSnapshot | null>(
+    null,
+  );
   const selected =
     requests.find((request) => request.id === selectedId) ?? requests[0];
+  const [methodDraft, setMethodDraft] = useState<HttpMethod>(selected.method);
   const [urlDraft, setUrlDraft] = useState(selected.path);
   const [bodyDraft, setBodyDraft] = useState(selected.body);
 
@@ -237,9 +224,13 @@ function App() {
 
   const selectRequest = (request: RequestExample) => {
     setSelectedId(request.id);
+    setMethodDraft(request.method);
     setUrlDraft(request.path);
     setBodyDraft(request.body);
     setResponseTab("Response");
+    setResponse(null);
+    setRequestError(null);
+    setLastRequest(null);
   };
 
   const toggleCollection = (collection: string) =>
@@ -249,20 +240,52 @@ function App() {
         : [...current, collection],
     );
 
-  const sendRequest = () => {
+  const sendRequest = async () => {
     if (isSending) return;
     setIsSending(true);
-    window.setTimeout(() => {
-      setRunCount((count) => count + 1);
+    setResponse(null);
+    setRequestError(null);
+    setLastRequest({
+      method: methodDraft,
+      url: urlDraft.trim(),
+      headers:
+        bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft)
+          ? [{ name: "content-type", value: "application/json" }]
+          : [],
+      body:
+        bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft)
+          ? bodyDraft.trim()
+          : null,
+      sentAt: new Date().toISOString(),
+    });
+
+    try {
+      const result = await sendRestRequest({
+        method: methodDraft,
+        url: urlDraft,
+        body: bodyDraft,
+      });
+      setResponse(result);
+      setResponseTab("Response");
+    } catch (error) {
+      setRequestError(
+        error instanceof Error
+          ? error.message
+          : "The request could not be completed.",
+      );
+    } finally {
       setIsSending(false);
-    }, 650);
+    }
   };
 
-  const copyResponse = async () =>
-    navigator.clipboard?.writeText(JSON.stringify(selected.response, null, 2));
+  const copyResponse = async () => {
+    if (response) await navigator.clipboard?.writeText(response.body);
+  };
   const bodyLines = (bodyDraft || "No body for this request.").split("\n");
-  const responseText = JSON.stringify(selected.response, null, 2);
-  const collections = ["Essentials", "Sandbox"];
+  const responseText = response ? formatResponseBody(response) : "";
+  const requestHeaderCount =
+    bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft) ? 1 : 0;
+  const collections = ["Public API"];
 
   const requestContent = () => {
     if (requestTab === "Body")
@@ -421,7 +444,13 @@ function App() {
                         <MethodBadge method={request.method} />
                         <span className="request-name">{request.name}</span>
                         <span
-                          className={`status-dot ${request.status < 300 ? "success" : ""}`}
+                          className={`status-dot ${
+                            selectedId === request.id &&
+                            response &&
+                            response.status < 400
+                              ? "success"
+                              : ""
+                          }`}
                         />
                       </button>
                     ))}
@@ -471,11 +500,15 @@ function App() {
         >
           <select
             aria-label="HTTP method"
-            className={`method-select method-${selected.method.toLowerCase()}`}
-            value={selected.method}
-            onChange={() => undefined}
+            className={`method-select method-${methodDraft.toLowerCase()}`}
+            value={methodDraft}
+            onChange={(event) =>
+              setMethodDraft(event.target.value as HttpMethod)
+            }
           >
-            <option>{selected.method}</option>
+            {methods.map((method) => (
+              <option key={method}>{method}</option>
+            ))}
           </select>
           <input
             aria-label="Request URL"
@@ -500,7 +533,9 @@ function App() {
               type="button"
             >
               {tab}
-              {tab === "Headers" && <span className="count-badge">3</span>}
+              {tab === "Headers" && requestHeaderCount > 0 && (
+                <span className="count-badge">{requestHeaderCount}</span>
+              )}
             </button>
           ))}
         </div>
@@ -517,20 +552,33 @@ function App() {
       </section>
 
       <section className="response-panel panel">
-        <div className="response-summary">
+        <div aria-live="polite" className="response-summary">
           <div className="response-metrics">
-            <strong>
-              {selected.status} {selected.status === 201 ? "Created" : "OK"}
-            </strong>
-            <span />
-            <span>{selected.duration + runCount * 2} ms</span>
-            <span />
-            <span>{selected.size}</span>
+            {response ? (
+              <>
+                <strong className={response.status >= 400 ? "error" : ""}>
+                  {response.status} {response.statusText}
+                </strong>
+                <span />
+                <span>{response.durationMs} ms</span>
+                <span />
+                <span>{formatBytes(response.sizeBytes)}</span>
+              </>
+            ) : (
+              <strong className={requestError ? "error" : "idle"}>
+                {isSending
+                  ? "Sending request…"
+                  : requestError
+                    ? "Request failed"
+                    : "Ready to send"}
+              </strong>
+            )}
           </div>
           <div>
             <button
               aria-label="Copy response"
               className="icon-button"
+              disabled={!response}
               onClick={copyResponse}
               type="button"
             >
@@ -560,13 +608,22 @@ function App() {
               type="button"
             >
               {tab}
-              {tab === "Headers" && <span className="count-badge">6</span>}
+              {tab === "Headers" && response && (
+                <span className="count-badge">{response.headers.length}</span>
+              )}
             </button>
           ))}
         </div>
         <div className="response-toolbar">
           <span>
-            <span className="live-dot" /> Pretty JSON
+            <span
+              className={`live-dot ${requestError ? "error" : response ? "" : "idle"}`}
+            />{" "}
+            {response?.contentType?.toLowerCase().includes("json")
+              ? "Pretty JSON"
+              : response
+                ? response.contentType || "Plain text"
+                : "Native response"}
           </span>
           <button className="plain-button" type="button">
             Wrap lines
@@ -574,43 +631,81 @@ function App() {
         </div>
         <div className="response-content">
           {responseTab === "Response" ? (
-            <div className="response-code">
-              <div aria-hidden="true" className="line-numbers response-lines">
-                {responseText.split("\n").map((_, index) => (
-                  <span key={index}>{index + 1}</span>
+            response ? (
+              <div className="response-code">
+                <div aria-hidden="true" className="line-numbers response-lines">
+                  {(responseText || " ").split("\n").map((_, index) => (
+                    <span key={index}>{index + 1}</span>
+                  ))}
+                </div>
+                <pre aria-label="Response body">
+                  {responseText || "Empty response body"}
+                </pre>
+              </div>
+            ) : (
+              <div className="empty-state response-empty">
+                <div className={`empty-icon ${requestError ? "error" : ""}`}>
+                  <Icon name={requestError ? "bolt" : "send"} size={20} />
+                </div>
+                <strong>
+                  {requestError
+                    ? "The request could not be completed"
+                    : isSending
+                      ? "Waiting for the API"
+                      : "Send a request to view its response"}
+                </strong>
+                <span>
+                  {requestError ??
+                    (isSending
+                      ? "The native Rust engine is executing the request."
+                      : "The status, timing, headers, and body will appear here.")}
+                </span>
+              </div>
+            )
+          ) : responseTab === "Headers" ? (
+            response ? (
+              <dl aria-label="Response headers" className="header-list">
+                {response.headers.map((header, index) => (
+                  <div key={`${header.name}-${index}`}>
+                    <dt>{header.name}</dt>
+                    <dd>{header.value}</dd>
+                  </div>
                 ))}
+              </dl>
+            ) : (
+              <div className="empty-state response-empty">
+                <strong>No response headers yet</strong>
+                <span>Send a request to inspect the returned headers.</span>
               </div>
-              <pre aria-label="Response body">{responseText}</pre>
-            </div>
+            )
           ) : (
-            <div className="empty-state response-empty">
-              <div className="empty-icon">
-                <Icon
-                  name={responseTab === "Headers" ? "layout" : "clock"}
-                  size={20}
-                />
-              </div>
-              <strong>
-                {responseTab === "Headers"
-                  ? "Response headers"
-                  : "Request snapshot"}
-              </strong>
-              <span>
-                {responseTab === "Headers"
-                  ? "6 response headers received."
-                  : "Inspect the exact request sent by the Rust engine."}
-              </span>
+            <div className="request-snapshot">
+              {lastRequest ? (
+                <pre aria-label="Request snapshot">
+                  {JSON.stringify(lastRequest, null, 2)}
+                </pre>
+              ) : (
+                <div className="empty-state response-empty">
+                  <div className="empty-icon">
+                    <Icon name="clock" size={20} />
+                  </div>
+                  <strong>No request sent yet</strong>
+                  <span>The exact request snapshot will appear here.</span>
+                </div>
+              )}
             </div>
           )}
         </div>
         <footer className="response-footer">
           <span>
-            <Icon name="bolt" size={14} /> Local engine
+            <Icon name="bolt" size={14} /> Native Rust engine
           </span>
           <span>
-            {runCount
-              ? `Updated just now · Run ${runCount + 1}`
-              : "Example response"}
+            {response
+              ? "Response received just now"
+              : requestError
+                ? "Check the URL and try again"
+                : "Waiting for a request"}
           </span>
         </footer>
       </section>
