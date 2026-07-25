@@ -12,7 +12,15 @@ npm run build
 npm run tauri -- dev
 ```
 
-The current interface is an interactive local prototype. API traffic will be connected through the typed Tauri boundary and Rust engine in a later increment.
+The current interface includes an initial REST request flow through a typed
+Tauri boundary and the native Rust engine. It supports HTTP methods, URL and
+JSON body input, response status, timing, headers, body rendering, a 30-second
+timeout, and a 10 MiB response limit.
+
+It also creates and switches between local workspaces in empty folders selected
+by the user. Each workspace receives a dedicated Git repository and initial
+commit. The user can start empty or include the currently loaded collections,
+rename the workspace, and keep its location in GetRest's local SQLite registry.
 
 ## Recommended IDE Setup
 

@@ -1,5 +1,26 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
+import type {
+  HttpMethod,
+  RestRequestSnapshot,
+  RestResponse,
+} from "./domain/rest";
+import type {
+  WorkspaceCollection,
+  WorkspaceGitState,
+  WorkspaceSummary,
+} from "./domain/workspace";
+import { sendRestRequest } from "./services/restRequests";
+import {
+  activateWorkspace,
+  createWorkspace,
+  getActiveWorkspace,
+  listWorkspaces,
+  loadWorkspaceCollections,
+  renameWorkspace,
+  selectWorkspaceDirectory,
+  WorkspaceServiceError,
+} from "./services/workspaces";
 
 type IconName =
   | "archive"
@@ -18,95 +39,60 @@ type IconName =
   | "search"
   | "send"
   | "sidebar";
-type Method = "GET" | "POST" | "PUT" | "PATCH";
-
 interface RequestExample {
   id: string;
   name: string;
-  method: Method;
+  method: HttpMethod;
   path: string;
   collection: string;
   body: string;
-  status: number;
-  duration: number;
-  size: string;
-  response: object;
 }
 
-const requests: RequestExample[] = [
+const initialRequests: RequestExample[] = [
   {
-    id: "health",
-    name: "Health check",
+    id: "todo",
+    name: "Todo details",
     method: "GET",
-    path: "{{BASE_URL}}/v1/health",
-    collection: "Essentials",
+    path: "https://jsonplaceholder.typicode.com/todos/1",
+    collection: "Public API",
     body: "",
-    status: 200,
-    duration: 38,
-    size: "248 B",
-    response: {
-      status: "healthy",
-      version: "0.1.0",
-      services: { database: "ready", secrets: "ready" },
-    },
   },
   {
-    id: "authenticate",
-    name: "Authenticate",
-    method: "POST",
-    path: "{{BASE_URL}}/v1/authenticate",
-    collection: "Essentials",
-    body: '{\n  "email": "developer@example.com",\n  "password": "{{PASSWORD}}"\n}',
-    status: 200,
-    duration: 94,
-    size: "1.2 KB",
-    response: {
-      user: { id: "usr_local_01", name: "Local developer" },
-      session: { expiresIn: 3600, scope: ["read", "write"] },
-    },
-  },
-  {
-    id: "profile",
-    name: "User profile",
+    id: "posts",
+    name: "Recent posts",
     method: "GET",
-    path: "{{BASE_URL}}/v1/me",
-    collection: "Essentials",
+    path: "https://jsonplaceholder.typicode.com/posts?_limit=5",
+    collection: "Public API",
     body: "",
-    status: 200,
-    duration: 51,
-    size: "684 B",
-    response: {
-      id: "usr_local_01",
-      name: "Local developer",
-      preferences: { locale: "pt-PT", theme: "dark" },
-    },
   },
   {
-    id: "create-project",
-    name: "Create project",
+    id: "create-post",
+    name: "Create post",
     method: "POST",
-    path: "{{BASE_URL}}/v1/projects",
-    collection: "Sandbox",
-    body: '{\n  "name": "GetRest demo",\n  "visibility": "private"\n}',
-    status: 201,
-    duration: 73,
-    size: "512 B",
-    response: { id: "prj_8f31", name: "GetRest demo", visibility: "private" },
-  },
-  {
-    id: "update-project",
-    name: "Update project",
-    method: "PATCH",
-    path: "{{BASE_URL}}/v1/projects/prj_8f31",
-    collection: "Sandbox",
-    body: '{\n  "name": "GetRest desktop"\n}',
-    status: 200,
-    duration: 61,
-    size: "498 B",
-    response: { id: "prj_8f31", name: "GetRest desktop", updated: true },
+    path: "https://jsonplaceholder.typicode.com/posts",
+    collection: "Public API",
+    body: '{\n  "title": "GetRest request",\n  "body": "Sent by the native Rust engine",\n  "userId": 1\n}',
   },
 ];
 
+const emptyRequest: RequestExample = {
+  id: "",
+  name: "No request selected",
+  method: "GET",
+  path: "",
+  collection: "",
+  body: "",
+};
+
+const methods: HttpMethod[] = [
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+];
 const requestTabs = ["Body", "Params", "Headers", "Auth"] as const;
 const responseTabs = ["Response", "Request", "Headers"] as const;
 
@@ -200,14 +186,86 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   );
 }
 
-function MethodBadge({ method }: { method: Method }) {
+function MethodBadge({ method }: { method: HttpMethod }) {
   return (
     <span className={`method method-${method.toLowerCase()}`}>{method}</span>
   );
 }
 
+function formatResponseBody(response: RestResponse): string {
+  if (!response.body) return "";
+
+  if (response.contentType?.toLowerCase().includes("json")) {
+    try {
+      return JSON.stringify(JSON.parse(response.body), null, 2);
+    } catch {
+      return response.body;
+    }
+  }
+
+  return response.body;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function workspaceStatusLabel(state?: WorkspaceGitState): string {
+  const labels: Record<WorkspaceGitState, string> = {
+    localOnly: "Local only",
+    clean: "Up to date",
+    changes: "Changes not committed",
+    unavailable: "Workspace unavailable",
+  };
+  return state ? labels[state] : "No workspace";
+}
+
+function isHttpMethod(value: string): value is HttpMethod {
+  return methods.some((method) => method === value);
+}
+
+function collectionsFromRequests(
+  requests: RequestExample[],
+): WorkspaceCollection[] {
+  const grouped = new Map<string, RequestExample[]>();
+  for (const request of requests) {
+    const existing = grouped.get(request.collection) ?? [];
+    existing.push(request);
+    grouped.set(request.collection, existing);
+  }
+  return [...grouped.entries()].map(([name, collectionRequests]) => ({
+    name,
+    requests: collectionRequests.map(
+      ({ id, name: requestName, method, path, body }) => ({
+        id,
+        name: requestName,
+        method,
+        path,
+        body,
+      }),
+    ),
+  }));
+}
+
+function requestsFromCollections(
+  collections: WorkspaceCollection[],
+): RequestExample[] {
+  return collections.flatMap((collection) =>
+    collection.requests
+      .filter((request) => isHttpMethod(request.method))
+      .map((request) => ({
+        ...request,
+        method: request.method as HttpMethod,
+        collection: collection.name,
+      })),
+  );
+}
+
 function App() {
-  const [selectedId, setSelectedId] = useState("authenticate");
+  const [selectedId, setSelectedId] = useState("todo");
+  const [requests, setRequests] = useState<RequestExample[]>(initialRequests);
   const [requestTab, setRequestTab] =
     useState<(typeof requestTabs)[number]>("Body");
   const [responseTab, setResponseTab] =
@@ -218,11 +276,60 @@ function App() {
   );
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [isSending, setIsSending] = useState(false);
-  const [runCount, setRunCount] = useState(0);
+  const [response, setResponse] = useState<RestResponse | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [lastRequest, setLastRequest] = useState<RestRequestSnapshot | null>(
+    null,
+  );
+  const [workspace, setWorkspace] = useState<WorkspaceSummary | null>(null);
+  const [knownWorkspaces, setKnownWorkspaces] = useState<WorkspaceSummary[]>(
+    [],
+  );
+  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
+  const [workspaceDialogMode, setWorkspaceDialogMode] = useState<
+    "manage" | "create"
+  >("create");
+  const [workspaceDirectory, setWorkspaceDirectory] = useState("");
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [workspaceContent, setWorkspaceContent] = useState<"move" | "empty">(
+    "move",
+  );
+  const [gitIdentityRequired, setGitIdentityRequired] = useState(false);
+  const [gitAuthorName, setGitAuthorName] = useState("");
+  const [gitAuthorEmail, setGitAuthorEmail] = useState("");
+  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
+  const [isRenamingWorkspace, setIsRenamingWorkspace] = useState(false);
+  const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
   const selected =
-    requests.find((request) => request.id === selectedId) ?? requests[0];
+    requests.find((request) => request.id === selectedId) ??
+    requests[0] ??
+    emptyRequest;
+  const [methodDraft, setMethodDraft] = useState<HttpMethod>(selected.method);
   const [urlDraft, setUrlDraft] = useState(selected.path);
   const [bodyDraft, setBodyDraft] = useState(selected.body);
+
+  useEffect(() => {
+    let active = true;
+    getActiveWorkspace()
+      .then(async (storedWorkspace) => {
+        if (!active) return;
+        setWorkspace(storedWorkspace);
+        setWorkspaceName(storedWorkspace?.name ?? "");
+        if (storedWorkspace) {
+          const storedCollections = await loadWorkspaceCollections(
+            storedWorkspace.id,
+          );
+          if (active) applyCollections(storedCollections);
+        }
+      })
+      .catch(() => {
+        if (active) setWorkspace(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const visibleRequests = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -233,13 +340,17 @@ function App() {
             .includes(query),
         )
       : requests;
-  }, [search]);
+  }, [requests, search]);
 
   const selectRequest = (request: RequestExample) => {
     setSelectedId(request.id);
+    setMethodDraft(request.method);
     setUrlDraft(request.path);
     setBodyDraft(request.body);
     setResponseTab("Response");
+    setResponse(null);
+    setRequestError(null);
+    setLastRequest(null);
   };
 
   const toggleCollection = (collection: string) =>
@@ -249,20 +360,207 @@ function App() {
         : [...current, collection],
     );
 
-  const sendRequest = () => {
-    if (isSending) return;
+  const sendRequest = async () => {
+    if (isSending || !selected.id) return;
     setIsSending(true);
-    window.setTimeout(() => {
-      setRunCount((count) => count + 1);
+    setResponse(null);
+    setRequestError(null);
+    setLastRequest({
+      method: methodDraft,
+      url: urlDraft.trim(),
+      headers:
+        bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft)
+          ? [{ name: "content-type", value: "application/json" }]
+          : [],
+      body:
+        bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft)
+          ? bodyDraft.trim()
+          : null,
+      sentAt: new Date().toISOString(),
+    });
+
+    try {
+      const result = await sendRestRequest({
+        method: methodDraft,
+        url: urlDraft,
+        body: bodyDraft,
+      });
+      setResponse(result);
+      setResponseTab("Response");
+    } catch (error) {
+      setRequestError(
+        error instanceof Error
+          ? error.message
+          : "The request could not be completed.",
+      );
+    } finally {
       setIsSending(false);
-    }, 650);
+    }
   };
 
-  const copyResponse = async () =>
-    navigator.clipboard?.writeText(JSON.stringify(selected.response, null, 2));
+  const copyResponse = async () => {
+    if (response) await navigator.clipboard?.writeText(response.body);
+  };
+
+  const applyRequests = (nextRequests: RequestExample[]) => {
+    setRequests(nextRequests);
+    const first = nextRequests[0] ?? emptyRequest;
+    setSelectedId(first.id);
+    setMethodDraft(first.method);
+    setUrlDraft(first.path);
+    setBodyDraft(first.body);
+    setResponse(null);
+    setRequestError(null);
+    setLastRequest(null);
+  };
+
+  const applyCollections = (collections: WorkspaceCollection[]) => {
+    applyRequests(requestsFromCollections(collections));
+  };
+
+  const openWorkspaceDialog = async () => {
+    setWorkspaceDialogOpen(true);
+    setWorkspaceDialogMode(workspace ? "manage" : "create");
+    setWorkspaceDirectory("");
+    setWorkspaceError(null);
+    setWorkspaceName(workspace?.name ?? "");
+    setWorkspaceContent(requests.length > 0 ? "move" : "empty");
+    setGitIdentityRequired(false);
+    setGitAuthorName("");
+    setGitAuthorEmail("");
+    try {
+      setKnownWorkspaces(await listWorkspaces());
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The saved workspaces could not be loaded.",
+      );
+    }
+  };
+
+  const beginNewWorkspace = () => {
+    setWorkspaceDialogMode("create");
+    setWorkspaceDirectory("");
+    setWorkspaceError(null);
+    setWorkspaceContent(requests.length > 0 ? "move" : "empty");
+    setGitIdentityRequired(false);
+  };
+
+  const chooseWorkspaceFolder = async () => {
+    setWorkspaceError(null);
+    try {
+      const directory = await selectWorkspaceDirectory();
+      if (directory) {
+        setWorkspaceDirectory(directory);
+        setGitIdentityRequired(false);
+      }
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The folder could not be selected.",
+      );
+    }
+  };
+
+  const submitWorkspace = async () => {
+    if (!workspaceDirectory || isCreatingWorkspace) return;
+    setIsCreatingWorkspace(true);
+    setWorkspaceError(null);
+
+    try {
+      const createdWorkspace = await createWorkspace(
+        workspaceDirectory,
+        gitIdentityRequired
+          ? { name: gitAuthorName, email: gitAuthorEmail }
+          : null,
+        workspaceContent === "move"
+          ? collectionsFromRequests(
+              requests.map((request) =>
+                request.id === selectedId
+                  ? {
+                      ...request,
+                      method: methodDraft,
+                      path: urlDraft,
+                      body: bodyDraft,
+                    }
+                  : request,
+              ),
+            )
+          : [],
+      );
+      setWorkspace(createdWorkspace);
+      setWorkspaceName(createdWorkspace.name);
+      if (workspaceContent === "empty") applyRequests([]);
+      setWorkspaceDialogOpen(false);
+    } catch (error) {
+      if (
+        error instanceof WorkspaceServiceError &&
+        error.code === "git_identity_required"
+      ) {
+        setGitIdentityRequired(true);
+      }
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace could not be created.",
+      );
+    } finally {
+      setIsCreatingWorkspace(false);
+    }
+  };
+
+  const submitWorkspaceRename = async () => {
+    if (!workspace || isRenamingWorkspace) return;
+    setIsRenamingWorkspace(true);
+    setWorkspaceError(null);
+    try {
+      const renamed = await renameWorkspace(workspace.id, workspaceName);
+      setWorkspace(renamed);
+      setKnownWorkspaces((current) =>
+        current.map((item) => (item.id === renamed.id ? renamed : item)),
+      );
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace could not be renamed.",
+      );
+    } finally {
+      setIsRenamingWorkspace(false);
+    }
+  };
+
+  const switchWorkspace = async (id: string) => {
+    if (workspace?.id === id || isSwitchingWorkspace) return;
+    setIsSwitchingWorkspace(true);
+    setWorkspaceError(null);
+    try {
+      const activated = await activateWorkspace(id);
+      const collections = await loadWorkspaceCollections(id);
+      setWorkspace(activated);
+      setWorkspaceName(activated.name);
+      applyCollections(collections);
+      setWorkspaceDialogOpen(false);
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace could not be opened.",
+      );
+    } finally {
+      setIsSwitchingWorkspace(false);
+    }
+  };
+
   const bodyLines = (bodyDraft || "No body for this request.").split("\n");
-  const responseText = JSON.stringify(selected.response, null, 2);
-  const collections = ["Essentials", "Sandbox"];
+  const responseText = response ? formatResponseBody(response) : "";
+  const requestHeaderCount =
+    bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft) ? 1 : 0;
+  const collections = [
+    ...new Set(requests.map((request) => request.collection)),
+  ];
 
   const requestContent = () => {
     if (requestTab === "Body")
@@ -323,11 +621,16 @@ function App() {
           <span className="brand-name">GetRest</span>
           <span className="app-stage">preview</span>
         </div>
-        <div className="workspace-switcher">
+        <button
+          className="workspace-switcher"
+          onClick={openWorkspaceDialog}
+          title={workspace?.path}
+          type="button"
+        >
           <span className="workspace-dot" />
-          <span>Local workspace</span>
+          <span>{workspace?.name ?? "Create workspace"}</span>
           <Icon name="chevron-down" size={15} />
-        </div>
+        </button>
         <div className="topbar-actions">
           <button
             aria-label="Toggle sidebar"
@@ -421,7 +724,13 @@ function App() {
                         <MethodBadge method={request.method} />
                         <span className="request-name">{request.name}</span>
                         <span
-                          className={`status-dot ${request.status < 300 ? "success" : ""}`}
+                          className={`status-dot ${
+                            selectedId === request.id &&
+                            response &&
+                            response.status < 400
+                              ? "success"
+                              : ""
+                          }`}
                         />
                       </button>
                     ))}
@@ -436,7 +745,8 @@ function App() {
         </nav>
         <div className="sidebar-footer">
           <button className="branch-button" type="button">
-            <Icon name="archive" size={15} /> Local only
+            <Icon name="archive" size={15} />{" "}
+            {workspaceStatusLabel(workspace?.gitState)}
           </button>
           <button
             aria-label="Workspace settings"
@@ -471,11 +781,15 @@ function App() {
         >
           <select
             aria-label="HTTP method"
-            className={`method-select method-${selected.method.toLowerCase()}`}
-            value={selected.method}
-            onChange={() => undefined}
+            className={`method-select method-${methodDraft.toLowerCase()}`}
+            value={methodDraft}
+            onChange={(event) =>
+              setMethodDraft(event.target.value as HttpMethod)
+            }
           >
-            <option>{selected.method}</option>
+            {methods.map((method) => (
+              <option key={method}>{method}</option>
+            ))}
           </select>
           <input
             aria-label="Request URL"
@@ -484,7 +798,11 @@ function App() {
             spellCheck={false}
             value={urlDraft}
           />
-          <button className="send-button" disabled={isSending} type="submit">
+          <button
+            className="send-button"
+            disabled={isSending || !selected.id}
+            type="submit"
+          >
             <span>{isSending ? "Sending" : "Send"}</span>
             <Icon name="send" size={17} />
           </button>
@@ -500,7 +818,9 @@ function App() {
               type="button"
             >
               {tab}
-              {tab === "Headers" && <span className="count-badge">3</span>}
+              {tab === "Headers" && requestHeaderCount > 0 && (
+                <span className="count-badge">{requestHeaderCount}</span>
+              )}
             </button>
           ))}
         </div>
@@ -517,20 +837,33 @@ function App() {
       </section>
 
       <section className="response-panel panel">
-        <div className="response-summary">
+        <div aria-live="polite" className="response-summary">
           <div className="response-metrics">
-            <strong>
-              {selected.status} {selected.status === 201 ? "Created" : "OK"}
-            </strong>
-            <span />
-            <span>{selected.duration + runCount * 2} ms</span>
-            <span />
-            <span>{selected.size}</span>
+            {response ? (
+              <>
+                <strong className={response.status >= 400 ? "error" : ""}>
+                  {response.status} {response.statusText}
+                </strong>
+                <span />
+                <span>{response.durationMs} ms</span>
+                <span />
+                <span>{formatBytes(response.sizeBytes)}</span>
+              </>
+            ) : (
+              <strong className={requestError ? "error" : "idle"}>
+                {isSending
+                  ? "Sending request…"
+                  : requestError
+                    ? "Request failed"
+                    : "Ready to send"}
+              </strong>
+            )}
           </div>
           <div>
             <button
               aria-label="Copy response"
               className="icon-button"
+              disabled={!response}
               onClick={copyResponse}
               type="button"
             >
@@ -560,13 +893,22 @@ function App() {
               type="button"
             >
               {tab}
-              {tab === "Headers" && <span className="count-badge">6</span>}
+              {tab === "Headers" && response && (
+                <span className="count-badge">{response.headers.length}</span>
+              )}
             </button>
           ))}
         </div>
         <div className="response-toolbar">
           <span>
-            <span className="live-dot" /> Pretty JSON
+            <span
+              className={`live-dot ${requestError ? "error" : response ? "" : "idle"}`}
+            />{" "}
+            {response?.contentType?.toLowerCase().includes("json")
+              ? "Pretty JSON"
+              : response
+                ? response.contentType || "Plain text"
+                : "Native response"}
           </span>
           <button className="plain-button" type="button">
             Wrap lines
@@ -574,46 +916,298 @@ function App() {
         </div>
         <div className="response-content">
           {responseTab === "Response" ? (
-            <div className="response-code">
-              <div aria-hidden="true" className="line-numbers response-lines">
-                {responseText.split("\n").map((_, index) => (
-                  <span key={index}>{index + 1}</span>
+            response ? (
+              <div className="response-code">
+                <div aria-hidden="true" className="line-numbers response-lines">
+                  {(responseText || " ").split("\n").map((_, index) => (
+                    <span key={index}>{index + 1}</span>
+                  ))}
+                </div>
+                <pre aria-label="Response body">
+                  {responseText || "Empty response body"}
+                </pre>
+              </div>
+            ) : (
+              <div className="empty-state response-empty">
+                <div className={`empty-icon ${requestError ? "error" : ""}`}>
+                  <Icon name={requestError ? "bolt" : "send"} size={20} />
+                </div>
+                <strong>
+                  {requestError
+                    ? "The request could not be completed"
+                    : isSending
+                      ? "Waiting for the API"
+                      : "Send a request to view its response"}
+                </strong>
+                <span>
+                  {requestError ??
+                    (isSending
+                      ? "The native Rust engine is executing the request."
+                      : "The status, timing, headers, and body will appear here.")}
+                </span>
+              </div>
+            )
+          ) : responseTab === "Headers" ? (
+            response ? (
+              <dl aria-label="Response headers" className="header-list">
+                {response.headers.map((header, index) => (
+                  <div key={`${header.name}-${index}`}>
+                    <dt>{header.name}</dt>
+                    <dd>{header.value}</dd>
+                  </div>
                 ))}
+              </dl>
+            ) : (
+              <div className="empty-state response-empty">
+                <strong>No response headers yet</strong>
+                <span>Send a request to inspect the returned headers.</span>
               </div>
-              <pre aria-label="Response body">{responseText}</pre>
-            </div>
+            )
           ) : (
-            <div className="empty-state response-empty">
-              <div className="empty-icon">
-                <Icon
-                  name={responseTab === "Headers" ? "layout" : "clock"}
-                  size={20}
-                />
-              </div>
-              <strong>
-                {responseTab === "Headers"
-                  ? "Response headers"
-                  : "Request snapshot"}
-              </strong>
-              <span>
-                {responseTab === "Headers"
-                  ? "6 response headers received."
-                  : "Inspect the exact request sent by the Rust engine."}
-              </span>
+            <div className="request-snapshot">
+              {lastRequest ? (
+                <pre aria-label="Request snapshot">
+                  {JSON.stringify(lastRequest, null, 2)}
+                </pre>
+              ) : (
+                <div className="empty-state response-empty">
+                  <div className="empty-icon">
+                    <Icon name="clock" size={20} />
+                  </div>
+                  <strong>No request sent yet</strong>
+                  <span>The exact request snapshot will appear here.</span>
+                </div>
+              )}
             </div>
           )}
         </div>
         <footer className="response-footer">
           <span>
-            <Icon name="bolt" size={14} /> Local engine
+            <Icon name="bolt" size={14} /> Native Rust engine
           </span>
           <span>
-            {runCount
-              ? `Updated just now · Run ${runCount + 1}`
-              : "Example response"}
+            {response
+              ? "Response received just now"
+              : requestError
+                ? "Check the URL and try again"
+                : "Waiting for a request"}
           </span>
         </footer>
       </section>
+      {workspaceDialogOpen && (
+        <div className="modal-backdrop">
+          <section
+            aria-labelledby="workspace-dialog-title"
+            aria-modal="true"
+            className="workspace-dialog"
+            role="dialog"
+          >
+            <header className="workspace-dialog-header">
+              <div>
+                <span className="eyebrow">Local-first workspace</span>
+                <h2 id="workspace-dialog-title">
+                  {workspaceDialogMode === "create"
+                    ? "Create workspace"
+                    : "Workspaces"}
+                </h2>
+              </div>
+              <button
+                aria-label="Close workspace dialog"
+                className="icon-button workspace-close-button"
+                onClick={() => setWorkspaceDialogOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <div className="workspace-dialog-content">
+              {workspaceDialogMode === "manage" && workspace ? (
+                <>
+                  <div className="workspace-list" aria-label="Saved workspaces">
+                    {knownWorkspaces.map((item) => (
+                      <button
+                        aria-current={
+                          item.id === workspace.id ? "true" : undefined
+                        }
+                        className="workspace-list-item"
+                        disabled={isSwitchingWorkspace}
+                        key={item.id}
+                        onClick={() => switchWorkspace(item.id)}
+                        type="button"
+                      >
+                        <span className="workspace-dot" />
+                        <span>
+                          <strong>{item.name}</strong>
+                          <small>{item.path}</small>
+                        </span>
+                        {item.id === workspace.id && <em>Active</em>}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="workspace-field">
+                    <span>Workspace name</span>
+                    <div>
+                      <input
+                        aria-label="Workspace name"
+                        maxLength={100}
+                        onChange={(event) =>
+                          setWorkspaceName(event.target.value)
+                        }
+                        value={workspaceName}
+                      />
+                      <button
+                        className="secondary-button"
+                        disabled={
+                          isRenamingWorkspace ||
+                          !workspaceName.trim() ||
+                          workspaceName.trim() === workspace.name
+                        }
+                        onClick={submitWorkspaceRename}
+                        type="button"
+                      >
+                        {isRenamingWorkspace ? "Saving…" : "Rename"}
+                      </button>
+                    </div>
+                  </label>
+                  <button
+                    className="new-workspace-card"
+                    onClick={beginNewWorkspace}
+                    type="button"
+                  >
+                    <Icon name="plus" size={18} />
+                    <span>
+                      <strong>Create a new workspace</strong>
+                      <small>Choose another empty, dedicated folder.</small>
+                    </span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p>
+                    Choose an empty folder. GetRest will create a dedicated Git
+                    repository that remains separate from the application
+                    source.
+                  </p>
+                  <label className="workspace-field">
+                    <span>Workspace folder</span>
+                    <div>
+                      <input
+                        aria-label="Workspace folder"
+                        placeholder="No folder selected"
+                        readOnly
+                        value={workspaceDirectory}
+                      />
+                      <button
+                        className="secondary-button"
+                        onClick={chooseWorkspaceFolder}
+                        type="button"
+                      >
+                        Choose folder
+                      </button>
+                    </div>
+                  </label>
+                  <fieldset className="workspace-content-choice">
+                    <legend>Initial content</legend>
+                    <label>
+                      <input
+                        checked={workspaceContent === "move"}
+                        disabled={requests.length === 0}
+                        name="workspace-content"
+                        onChange={() => setWorkspaceContent("move")}
+                        type="radio"
+                      />
+                      <span>
+                        <strong>Move current collections</strong>
+                        <small>
+                          Add {collections.length}{" "}
+                          {collections.length === 1
+                            ? "collection"
+                            : "collections"}{" "}
+                          and {requests.length} requests to the new repository.
+                        </small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        checked={workspaceContent === "empty"}
+                        name="workspace-content"
+                        onChange={() => setWorkspaceContent("empty")}
+                        type="radio"
+                      />
+                      <span>
+                        <strong>Start with an empty workspace</strong>
+                        <small>
+                          Create the repository without collections.
+                        </small>
+                      </span>
+                    </label>
+                  </fieldset>
+                  {gitIdentityRequired && (
+                    <div className="git-identity-fields">
+                      <div className="identity-callout">
+                        Git needs an author for the initial commit. These values
+                        will be stored only in this workspace repository.
+                      </div>
+                      <label className="workspace-field">
+                        <span>Git author name</span>
+                        <input
+                          aria-label="Git author name"
+                          autoComplete="name"
+                          onChange={(event) =>
+                            setGitAuthorName(event.target.value)
+                          }
+                          value={gitAuthorName}
+                        />
+                      </label>
+                      <label className="workspace-field">
+                        <span>Git author email</span>
+                        <input
+                          aria-label="Git author email"
+                          autoComplete="email"
+                          onChange={(event) =>
+                            setGitAuthorEmail(event.target.value)
+                          }
+                          type="email"
+                          value={gitAuthorEmail}
+                        />
+                      </label>
+                    </div>
+                  )}
+                </>
+              )}
+              {workspaceError && (
+                <div aria-live="polite" className="workspace-error">
+                  {workspaceError}
+                </div>
+              )}
+            </div>
+            <footer className="workspace-dialog-actions">
+              <button
+                className="plain-button"
+                onClick={() => setWorkspaceDialogOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              {workspaceDialogMode === "create" && (
+                <button
+                  className="send-button workspace-create-button"
+                  disabled={
+                    !workspaceDirectory ||
+                    isCreatingWorkspace ||
+                    (gitIdentityRequired &&
+                      (!gitAuthorName.trim() || !gitAuthorEmail.trim()))
+                  }
+                  onClick={submitWorkspace}
+                  type="button"
+                >
+                  {isCreatingWorkspace ? "Creating…" : "Create workspace"}
+                </button>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
