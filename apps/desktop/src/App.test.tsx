@@ -16,11 +16,14 @@ const workspaceMocks = vi.hoisted(() => {
 
   return {
     activate: vi.fn(),
+    createCollection: vi.fn(),
     create: vi.fn(),
     getActive: vi.fn(),
     list: vi.fn(),
     loadCollections: vi.fn(),
     rename: vi.fn(),
+    renameCollection: vi.fn(),
+    saveRequest: vi.fn(),
     selectDirectory: vi.fn(),
     WorkspaceServiceError: MockWorkspaceServiceError,
   };
@@ -31,11 +34,14 @@ vi.mock("./services/restRequests", () => ({
 }));
 vi.mock("./services/workspaces", () => ({
   activateWorkspace: workspaceMocks.activate,
+  createWorkspaceCollection: workspaceMocks.createCollection,
   createWorkspace: workspaceMocks.create,
   getActiveWorkspace: workspaceMocks.getActive,
   listWorkspaces: workspaceMocks.list,
   loadWorkspaceCollections: workspaceMocks.loadCollections,
   renameWorkspace: workspaceMocks.rename,
+  renameWorkspaceCollection: workspaceMocks.renameCollection,
+  saveWorkspaceRequest: workspaceMocks.saveRequest,
   selectWorkspaceDirectory: workspaceMocks.selectDirectory,
   WorkspaceServiceError: workspaceMocks.WorkspaceServiceError,
 }));
@@ -44,11 +50,14 @@ describe("GetRest desktop shell", () => {
   beforeEach(() => {
     sendRestRequestMock.mockReset();
     workspaceMocks.activate.mockReset();
+    workspaceMocks.createCollection.mockReset();
     workspaceMocks.create.mockReset();
     workspaceMocks.getActive.mockReset();
     workspaceMocks.list.mockReset();
     workspaceMocks.loadCollections.mockReset();
     workspaceMocks.rename.mockReset();
+    workspaceMocks.renameCollection.mockReset();
+    workspaceMocks.saveRequest.mockReset();
     workspaceMocks.selectDirectory.mockReset();
     workspaceMocks.getActive.mockResolvedValue(null);
     workspaceMocks.list.mockResolvedValue([]);
@@ -62,6 +71,83 @@ describe("GetRest desktop shell", () => {
       path: "/tmp/getrest-demo-workspace",
       gitState: "localOnly",
       hasRemote: false,
+    });
+    workspaceMocks.saveRequest.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "getrest-demo-workspace",
+        path: "/tmp/getrest-demo-workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [
+        {
+          name: "Public API",
+          requests: [
+            {
+              id: "todo",
+              name: "Todo details",
+              method: "GET",
+              path: "https://jsonplaceholder.typicode.com/todos/1",
+              body: "",
+            },
+          ],
+        },
+      ],
+      request: {
+        id: "todo",
+        name: "Todo details",
+        method: "GET",
+        path: "https://jsonplaceholder.typicode.com/todos/1",
+        body: "",
+      },
+    });
+    workspaceMocks.renameCollection.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "getrest-demo-workspace",
+        path: "/tmp/getrest-demo-workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [
+        {
+          name: "Internal API",
+          requests: [
+            {
+              id: "todo",
+              name: "Todo details",
+              method: "GET",
+              path: "https://jsonplaceholder.typicode.com/todos/1",
+              body: "",
+            },
+          ],
+        },
+      ],
+    });
+    workspaceMocks.createCollection.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "getrest-demo-workspace",
+        path: "/tmp/getrest-demo-workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [
+        {
+          name: "Public API",
+          requests: [
+            {
+              id: "todo",
+              name: "Todo details",
+              method: "GET",
+              path: "https://jsonplaceholder.typicode.com/todos/1",
+              body: "",
+            },
+          ],
+        },
+        { name: "Empty API", requests: [] },
+      ],
     });
     sendRestRequestMock.mockResolvedValue({
       status: 200,
@@ -165,6 +251,248 @@ describe("GetRest desktop shell", () => {
       await screen.findByText("The remote API could not be reached."),
     ).toBeInTheDocument();
     expect(screen.getByText("Request failed")).toBeInTheDocument();
+  });
+
+  it("saves the current request in a workspace collection", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = screen.getByRole("dialog", { name: "Save request" });
+    const nameInput = within(dialog).getByLabelText("Request name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Updated todo");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save request" }),
+    );
+
+    expect(workspaceMocks.saveRequest).toHaveBeenCalledWith(
+      "workspace-1",
+      "Public API",
+      {
+        id: "todo",
+        name: "Updated todo",
+        method: "GET",
+        path: "https://jsonplaceholder.typicode.com/todos/1",
+        body: "",
+      },
+    );
+    expect(
+      await screen.findByRole("button", { name: /Changes not committed/ }),
+    ).toBeVisible();
+  });
+
+  it("renames the selected request through the explicit action", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(screen.getByRole("button", { name: "Request options" }));
+    await user.click(screen.getByRole("menuitem", { name: /Rename request/ }));
+    const dialog = screen.getByRole("dialog", { name: "Rename request" });
+    const nameInput = within(dialog).getByLabelText("Request name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed todo");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Rename request" }),
+    );
+
+    expect(workspaceMocks.saveRequest).toHaveBeenCalledWith(
+      "workspace-1",
+      "Public API",
+      expect.objectContaining({
+        id: "todo",
+        name: "Renamed todo",
+      }),
+    );
+  });
+
+  it("starts a new unsaved request from the request menu", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(screen.getByRole("button", { name: "Request options" }));
+    await user.click(screen.getByRole("menuitem", { name: /New request/ }));
+
+    expect(screen.getByRole("heading", { name: "New request" })).toBeVisible();
+    expect(screen.getByLabelText("Request URL")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(
+      screen.getByLabelText("Request URL"),
+      "https://example.com/health",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("renames a selected workspace collection", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(
+      screen.getByRole("button", { name: "Collection options" }),
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: /Rename collection/ }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Rename collection" });
+    const nameInput = within(dialog).getByLabelText("New collection name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Internal API");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Rename collection" }),
+    );
+
+    expect(workspaceMocks.renameCollection).toHaveBeenCalledWith(
+      "workspace-1",
+      "Public API",
+      "Internal API",
+    );
+    expect(
+      await screen.findByRole("button", { name: /Internal API/ }),
+    ).toBeVisible();
+  });
+
+  it("creates and keeps an empty workspace collection", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(
+      screen.getByRole("button", { name: "Collection options" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: /New collection/ }));
+    const dialog = screen.getByRole("dialog", { name: "Create collection" });
+    await user.type(
+      within(dialog).getByLabelText("Collection name"),
+      "Empty API",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Create collection" }),
+    );
+
+    expect(workspaceMocks.createCollection).toHaveBeenCalledWith(
+      "workspace-1",
+      "Empty API",
+    );
+    expect(
+      await screen.findByRole("button", { name: /Empty API 0/ }),
+    ).toBeVisible();
   });
 
   it("creates a dedicated local workspace from a selected folder", async () => {

@@ -12,9 +12,9 @@ interface is built with React and TypeScript.
 > GetRest is in an early stage of development. The current desktop shell is an
 > interactive prototype with an initial native REST request flow, dedicated
 > local Git workspaces, and versioned collection migration during workspace
-> creation. Editing and continuously saving collections, remote synchronization,
-> advanced request options, and the remaining protocols are still under
-> development.
+> creation. Requests can be explicitly saved to workspace collections. Automatic
+> persistence while editing, remote synchronization, advanced request options,
+> and the remaining protocols are still under development.
 
 ## Product principles
 

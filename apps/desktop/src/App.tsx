@@ -14,10 +14,13 @@ import { sendRestRequest } from "./services/restRequests";
 import {
   activateWorkspace,
   createWorkspace,
+  createWorkspaceCollection,
   getActiveWorkspace,
   listWorkspaces,
   loadWorkspaceCollections,
   renameWorkspace,
+  renameWorkspaceCollection,
+  saveWorkspaceRequest,
   selectWorkspaceDirectory,
   WorkspaceServiceError,
 } from "./services/workspaces";
@@ -37,6 +40,7 @@ type IconName =
   | "more"
   | "plus"
   | "search"
+  | "save"
   | "send"
   | "sidebar";
 interface RequestExample {
@@ -77,7 +81,7 @@ const initialRequests: RequestExample[] = [
 
 const emptyRequest: RequestExample = {
   id: "",
-  name: "No request selected",
+  name: "New request",
   method: "GET",
   path: "",
   collection: "",
@@ -157,6 +161,12 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
         <path d="m20 20-4-4" />
       </>
     ),
+    save: (
+      <>
+        <path d="M5 4h12l2 2v14H5z" />
+        <path d="M8 4v6h8V4M8 20v-6h8v6" />
+      </>
+    ),
     send: <path d="m4 4 17 8-17 8 3-8zm3 8h14" />,
     sidebar: (
       <>
@@ -228,8 +238,11 @@ function isHttpMethod(value: string): value is HttpMethod {
 
 function collectionsFromRequests(
   requests: RequestExample[],
+  collectionNames: string[] = [],
 ): WorkspaceCollection[] {
-  const grouped = new Map<string, RequestExample[]>();
+  const grouped = new Map<string, RequestExample[]>(
+    collectionNames.map((name) => [name, []]),
+  );
   for (const request of requests) {
     const existing = grouped.get(request.collection) ?? [];
     existing.push(request);
@@ -266,6 +279,9 @@ function requestsFromCollections(
 function App() {
   const [selectedId, setSelectedId] = useState("todo");
   const [requests, setRequests] = useState<RequestExample[]>(initialRequests);
+  const [collectionNames, setCollectionNames] = useState<string[]>([
+    "Public API",
+  ]);
   const [requestTab, setRequestTab] =
     useState<(typeof requestTabs)[number]>("Body");
   const [responseTab, setResponseTab] =
@@ -301,10 +317,32 @@ function App() {
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   const [isRenamingWorkspace, setIsRenamingWorkspace] = useState(false);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
-  const selected =
-    requests.find((request) => request.id === selectedId) ??
-    requests[0] ??
-    emptyRequest;
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveDialogPurpose, setSaveDialogPurpose] = useState<"save" | "rename">(
+    "save",
+  );
+  const [saveRequestName, setSaveRequestName] = useState("");
+  const [saveCollectionName, setSaveCollectionName] = useState("");
+  const [saveRequestError, setSaveRequestError] = useState<string | null>(null);
+  const [isSavingRequest, setIsSavingRequest] = useState(false);
+  const [renameCollectionDialogOpen, setRenameCollectionDialogOpen] =
+    useState(false);
+  const [renameCollectionCurrent, setRenameCollectionCurrent] = useState("");
+  const [renameCollectionName, setRenameCollectionName] = useState("");
+  const [renameCollectionError, setRenameCollectionError] = useState<
+    string | null
+  >(null);
+  const [isRenamingCollection, setIsRenamingCollection] = useState(false);
+  const [requestMenuOpen, setRequestMenuOpen] = useState(false);
+  const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
+  const [collectionDialogPurpose, setCollectionDialogPurpose] = useState<
+    "create" | "rename"
+  >("rename");
+  const selected = selectedId
+    ? (requests.find((request) => request.id === selectedId) ??
+      requests[0] ??
+      emptyRequest)
+    : emptyRequest;
   const [methodDraft, setMethodDraft] = useState<HttpMethod>(selected.method);
   const [urlDraft, setUrlDraft] = useState(selected.path);
   const [bodyDraft, setBodyDraft] = useState(selected.body);
@@ -343,6 +381,7 @@ function App() {
   }, [requests, search]);
 
   const selectRequest = (request: RequestExample) => {
+    setRequestMenuOpen(false);
     setSelectedId(request.id);
     setMethodDraft(request.method);
     setUrlDraft(request.path);
@@ -361,7 +400,7 @@ function App() {
     );
 
   const sendRequest = async () => {
-    if (isSending || !selected.id) return;
+    if (isSending || !urlDraft.trim()) return;
     setIsSending(true);
     setResponse(null);
     setRequestError(null);
@@ -402,9 +441,15 @@ function App() {
     if (response) await navigator.clipboard?.writeText(response.body);
   };
 
-  const applyRequests = (nextRequests: RequestExample[]) => {
+  const applyRequests = (
+    nextRequests: RequestExample[],
+    preferredId?: string,
+  ) => {
     setRequests(nextRequests);
-    const first = nextRequests[0] ?? emptyRequest;
+    const first =
+      nextRequests.find((request) => request.id === preferredId) ??
+      nextRequests[0] ??
+      emptyRequest;
     setSelectedId(first.id);
     setMethodDraft(first.method);
     setUrlDraft(first.path);
@@ -414,8 +459,12 @@ function App() {
     setLastRequest(null);
   };
 
-  const applyCollections = (collections: WorkspaceCollection[]) => {
-    applyRequests(requestsFromCollections(collections));
+  const applyCollections = (
+    collections: WorkspaceCollection[],
+    preferredId?: string,
+  ) => {
+    setCollectionNames(collections.map((collection) => collection.name));
+    applyRequests(requestsFromCollections(collections), preferredId);
   };
 
   const openWorkspaceDialog = async () => {
@@ -487,12 +536,16 @@ function App() {
                     }
                   : request,
               ),
+              collectionNames,
             )
           : [],
       );
       setWorkspace(createdWorkspace);
       setWorkspaceName(createdWorkspace.name);
-      if (workspaceContent === "empty") applyRequests([]);
+      if (workspaceContent === "empty") {
+        setCollectionNames([]);
+        applyRequests([]);
+      }
       setWorkspaceDialogOpen(false);
     } catch (error) {
       if (
@@ -554,13 +607,130 @@ function App() {
     }
   };
 
+  const openSaveRequestDialog = () => {
+    if (!workspace || !urlDraft.trim()) return;
+    setRequestMenuOpen(false);
+    setSaveDialogPurpose("save");
+    setSaveRequestName(selected.id ? selected.name : "New request");
+    setSaveCollectionName(
+      selected.collection || collections[0] || "My Collection",
+    );
+    setSaveRequestError(null);
+    setSaveDialogOpen(true);
+  };
+
+  const openRenameRequestDialog = () => {
+    if (!workspace || !selected.id) return;
+    setRequestMenuOpen(false);
+    setSaveDialogPurpose("rename");
+    setSaveRequestName(selected.name);
+    setSaveCollectionName(selected.collection);
+    setSaveRequestError(null);
+    setSaveDialogOpen(true);
+  };
+
+  const createRequestDraft = () => {
+    if (!workspace) return;
+    setRequestMenuOpen(false);
+    setSelectedId("");
+    setMethodDraft("GET");
+    setUrlDraft("");
+    setBodyDraft("");
+    setRequestTab("Body");
+    setResponseTab("Response");
+    setResponse(null);
+    setRequestError(null);
+    setLastRequest(null);
+  };
+
+  const submitSaveRequest = async () => {
+    if (!workspace || isSavingRequest) return;
+    setIsSavingRequest(true);
+    setSaveRequestError(null);
+    try {
+      const result = await saveWorkspaceRequest(
+        workspace.id,
+        saveCollectionName,
+        {
+          id: selected.id || null,
+          name: saveRequestName,
+          method: methodDraft,
+          path: urlDraft,
+          body: bodyDraft,
+        },
+      );
+      setWorkspace(result.workspace);
+      applyCollections(result.collections, result.request.id);
+      setSaveDialogOpen(false);
+    } catch (error) {
+      setSaveRequestError(
+        error instanceof Error
+          ? error.message
+          : "The request could not be saved.",
+      );
+    } finally {
+      setIsSavingRequest(false);
+    }
+  };
+
+  const openRenameCollectionDialog = () => {
+    if (!workspace || collections.length === 0) return;
+    setCollectionMenuOpen(false);
+    setCollectionDialogPurpose("rename");
+    const current =
+      selected.collection && collections.includes(selected.collection)
+        ? selected.collection
+        : collections[0];
+    setRenameCollectionCurrent(current);
+    setRenameCollectionName(current);
+    setRenameCollectionError(null);
+    setRenameCollectionDialogOpen(true);
+  };
+
+  const openCreateCollectionDialog = () => {
+    if (!workspace) return;
+    setCollectionMenuOpen(false);
+    setCollectionDialogPurpose("create");
+    setRenameCollectionCurrent("");
+    setRenameCollectionName("");
+    setRenameCollectionError(null);
+    setRenameCollectionDialogOpen(true);
+  };
+
+  const submitRenameCollection = async () => {
+    if (!workspace || isRenamingCollection) return;
+    setIsRenamingCollection(true);
+    setRenameCollectionError(null);
+    try {
+      const result =
+        collectionDialogPurpose === "create"
+          ? await createWorkspaceCollection(workspace.id, renameCollectionName)
+          : await renameWorkspaceCollection(
+              workspace.id,
+              renameCollectionCurrent,
+              renameCollectionName,
+            );
+      setWorkspace(result.workspace);
+      applyCollections(result.collections, selected.id);
+      setRenameCollectionDialogOpen(false);
+    } catch (error) {
+      setRenameCollectionError(
+        error instanceof Error
+          ? error.message
+          : collectionDialogPurpose === "create"
+            ? "The collection could not be created."
+            : "The collection could not be renamed.",
+      );
+    } finally {
+      setIsRenamingCollection(false);
+    }
+  };
+
   const bodyLines = (bodyDraft || "No body for this request.").split("\n");
   const responseText = response ? formatResponseBody(response) : "";
   const requestHeaderCount =
     bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft) ? 1 : 0;
-  const collections = [
-    ...new Set(requests.map((request) => request.collection)),
-  ];
+  const collections = collectionNames;
 
   const requestContent = () => {
     if (requestTab === "Body")
@@ -672,6 +842,8 @@ function App() {
           <button
             aria-label="Add collection"
             className="icon-button compact"
+            disabled={!workspace}
+            onClick={openCreateCollectionDialog}
             type="button"
           >
             <Icon name="plus" />
@@ -679,13 +851,50 @@ function App() {
         </div>
         <div className="sidebar-heading">
           <span>Collections</span>
-          <button
-            aria-label="Collection options"
-            className="icon-button compact"
-            type="button"
-          >
-            <Icon name="more" />
-          </button>
+          <div className="request-menu collection-menu">
+            <button
+              aria-expanded={collectionMenuOpen}
+              aria-haspopup="menu"
+              aria-label="Collection options"
+              className="icon-button compact"
+              disabled={!workspace}
+              onClick={() => setCollectionMenuOpen((open) => !open)}
+              type="button"
+            >
+              <Icon name="more" />
+            </button>
+            {collectionMenuOpen && (
+              <div
+                aria-label="Collection actions"
+                className="request-menu-popover"
+                role="menu"
+              >
+                <button
+                  onClick={openCreateCollectionDialog}
+                  role="menuitem"
+                  type="button"
+                >
+                  <Icon name="plus" size={15} />
+                  <span>
+                    <strong>New collection</strong>
+                    <small>Create an empty collection</small>
+                  </span>
+                </button>
+                <button
+                  disabled={collections.length === 0}
+                  onClick={openRenameCollectionDialog}
+                  role="menuitem"
+                  type="button"
+                >
+                  <Icon name="folder" size={15} />
+                  <span>
+                    <strong>Rename collection</strong>
+                    <small>Change an existing collection name</small>
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <nav aria-label="Request collections" className="collections">
           {collections.map((collection) => {
@@ -764,13 +973,66 @@ function App() {
             <span className="eyebrow">Request</span>
             <h1>{selected.name}</h1>
           </div>
-          <button
-            aria-label="Request options"
-            className="icon-button"
-            type="button"
-          >
-            <Icon name="more" />
-          </button>
+          <div className="request-title-actions">
+            <button
+              className="secondary-button save-request-button"
+              disabled={!workspace || !urlDraft.trim()}
+              onClick={openSaveRequestDialog}
+              title={
+                workspace
+                  ? "Save this request"
+                  : "Create or select a workspace first"
+              }
+              type="button"
+            >
+              <Icon name="save" size={15} />
+              Save
+            </button>
+            <div className="request-menu">
+              <button
+                aria-expanded={requestMenuOpen}
+                aria-haspopup="menu"
+                aria-label="Request options"
+                className="icon-button"
+                onClick={() => setRequestMenuOpen((open) => !open)}
+                type="button"
+              >
+                <Icon name="more" />
+              </button>
+              {requestMenuOpen && (
+                <div
+                  aria-label="Request actions"
+                  className="request-menu-popover"
+                  role="menu"
+                >
+                  <button
+                    disabled={!workspace}
+                    onClick={createRequestDraft}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <Icon name="plus" size={15} />
+                    <span>
+                      <strong>New request</strong>
+                      <small>Start with an empty draft</small>
+                    </span>
+                  </button>
+                  <button
+                    disabled={!workspace || !selected.id}
+                    onClick={openRenameRequestDialog}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <Icon name="code" size={15} />
+                    <span>
+                      <strong>Rename request</strong>
+                      <small>Change the selected item name</small>
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
         <form
           className="request-bar"
@@ -800,7 +1062,7 @@ function App() {
           />
           <button
             className="send-button"
-            disabled={isSending || !selected.id}
+            disabled={isSending || !urlDraft.trim()}
             type="submit"
           >
             <span>{isSending ? "Sending" : "Send"}</span>
@@ -994,6 +1256,215 @@ function App() {
           </span>
         </footer>
       </section>
+      {renameCollectionDialogOpen && (
+        <div className="modal-backdrop">
+          <section
+            aria-labelledby="collection-dialog-title"
+            aria-modal="true"
+            className="workspace-dialog save-request-dialog"
+            role="dialog"
+          >
+            <header className="workspace-dialog-header">
+              <div>
+                <span className="eyebrow">Workspace collection</span>
+                <h2 id="collection-dialog-title">
+                  {collectionDialogPurpose === "create"
+                    ? "Create collection"
+                    : "Rename collection"}
+                </h2>
+              </div>
+              <button
+                aria-label="Close collection dialog"
+                className="icon-button workspace-close-button"
+                onClick={() => setRenameCollectionDialogOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <div className="workspace-dialog-content">
+              <p>
+                {collectionDialogPurpose === "create"
+                  ? "Create an empty collection in the active workspace. You can add requests to it whenever you are ready."
+                  : "Choose a collection and update its name. All contained requests keep their identifiers and order."}
+              </p>
+              {collectionDialogPurpose === "rename" && (
+                <label className="workspace-field">
+                  <span>Collection</span>
+                  <select
+                    aria-label="Collection to rename"
+                    onChange={(event) => {
+                      setRenameCollectionCurrent(event.target.value);
+                      setRenameCollectionName(event.target.value);
+                      setRenameCollectionError(null);
+                    }}
+                    value={renameCollectionCurrent}
+                  >
+                    {collections.map((collection) => (
+                      <option key={collection} value={collection}>
+                        {collection}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label className="workspace-field">
+                <span>
+                  {collectionDialogPurpose === "create"
+                    ? "Collection name"
+                    : "New collection name"}
+                </span>
+                <input
+                  aria-label={
+                    collectionDialogPurpose === "create"
+                      ? "Collection name"
+                      : "New collection name"
+                  }
+                  autoFocus
+                  maxLength={100}
+                  onChange={(event) => {
+                    setRenameCollectionName(event.target.value);
+                    setRenameCollectionError(null);
+                  }}
+                  value={renameCollectionName}
+                />
+              </label>
+              {renameCollectionError && (
+                <div aria-live="polite" className="workspace-error">
+                  {renameCollectionError}
+                </div>
+              )}
+            </div>
+            <footer className="workspace-dialog-actions">
+              <button
+                className="plain-button"
+                onClick={() => setRenameCollectionDialogOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="send-button workspace-create-button"
+                disabled={
+                  isRenamingCollection ||
+                  !renameCollectionName.trim() ||
+                  (collectionDialogPurpose === "rename" &&
+                    renameCollectionName.trim() === renameCollectionCurrent)
+                }
+                onClick={submitRenameCollection}
+                type="button"
+              >
+                {isRenamingCollection
+                  ? collectionDialogPurpose === "create"
+                    ? "Creating…"
+                    : "Renaming…"
+                  : collectionDialogPurpose === "create"
+                    ? "Create collection"
+                    : "Rename collection"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {saveDialogOpen && (
+        <div className="modal-backdrop">
+          <section
+            aria-labelledby="save-request-dialog-title"
+            aria-modal="true"
+            className="workspace-dialog save-request-dialog"
+            role="dialog"
+          >
+            <header className="workspace-dialog-header">
+              <div>
+                <span className="eyebrow">Workspace item</span>
+                <h2 id="save-request-dialog-title">
+                  {saveDialogPurpose === "rename"
+                    ? "Rename request"
+                    : "Save request"}
+                </h2>
+              </div>
+              <button
+                aria-label="Close save request dialog"
+                className="icon-button workspace-close-button"
+                onClick={() => setSaveDialogOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <div className="workspace-dialog-content">
+              <p>
+                {saveDialogPurpose === "rename"
+                  ? "Change the item name without changing its method, URL, body, or collection."
+                  : "Save the current method, URL, and body in the workspace repository. Existing items are updated without creating an automatic Git commit."}
+              </p>
+              <label className="workspace-field">
+                <span>Request name</span>
+                <input
+                  aria-label="Request name"
+                  autoFocus
+                  maxLength={200}
+                  onChange={(event) => setSaveRequestName(event.target.value)}
+                  value={saveRequestName}
+                />
+              </label>
+              {saveDialogPurpose === "save" && (
+                <label className="workspace-field">
+                  <span>Collection</span>
+                  <input
+                    aria-label="Collection"
+                    list="workspace-collections"
+                    maxLength={100}
+                    onChange={(event) =>
+                      setSaveCollectionName(event.target.value)
+                    }
+                    value={saveCollectionName}
+                  />
+                  <datalist id="workspace-collections">
+                    {collections.map((collection) => (
+                      <option key={collection} value={collection} />
+                    ))}
+                  </datalist>
+                </label>
+              )}
+              <div className="request-save-preview">
+                <MethodBadge method={methodDraft} />
+                <span>{urlDraft}</span>
+              </div>
+              {saveRequestError && (
+                <div aria-live="polite" className="workspace-error">
+                  {saveRequestError}
+                </div>
+              )}
+            </div>
+            <footer className="workspace-dialog-actions">
+              <button
+                className="plain-button"
+                onClick={() => setSaveDialogOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="send-button workspace-create-button"
+                disabled={
+                  isSavingRequest ||
+                  !saveRequestName.trim() ||
+                  !saveCollectionName.trim()
+                }
+                onClick={submitSaveRequest}
+                type="button"
+              >
+                {isSavingRequest
+                  ? "Saving…"
+                  : saveDialogPurpose === "rename"
+                    ? "Rename request"
+                    : "Save request"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
       {workspaceDialogOpen && (
         <div className="modal-backdrop">
           <section

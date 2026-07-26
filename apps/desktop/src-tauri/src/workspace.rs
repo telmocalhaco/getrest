@@ -1,6 +1,8 @@
+use reqwest::Url;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -41,6 +43,39 @@ pub struct RenameWorkspaceInput {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkspaceRequestInput {
+    workspace_id: String,
+    collection_name: String,
+    request: UnsavedWorkspaceRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameWorkspaceCollectionInput {
+    workspace_id: String,
+    current_name: String,
+    new_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkspaceCollectionInput {
+    workspace_id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsavedWorkspaceRequest {
+    id: Option<String>,
+    name: String,
+    method: String,
+    path: String,
+    body: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceCollection {
@@ -56,6 +91,21 @@ pub struct WorkspaceRequest {
     method: String,
     path: String,
     body: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkspaceRequestResult {
+    workspace: WorkspaceSummary,
+    collections: Vec<WorkspaceCollection>,
+    request: WorkspaceRequest,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceCollectionsMutationResult {
+    workspace: WorkspaceSummary,
+    collections: Vec<WorkspaceCollection>,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,6 +298,58 @@ pub async fn load_workspace_collections(
         WorkspaceCommandError::new(
             "workspace_load_failed",
             "The workspace collections could not be loaded.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn save_workspace_request(
+    app: AppHandle,
+    input: SaveWorkspaceRequestInput,
+) -> Result<SaveWorkspaceRequestResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || save_request_to_workspace(&app_data_dir, input))
+        .await
+        .map_err(|_| {
+            WorkspaceCommandError::new(
+                "workspace_request_save_failed",
+                "The request save operation stopped unexpectedly.",
+            )
+        })?
+}
+
+#[tauri::command]
+pub async fn rename_workspace_collection(
+    app: AppHandle,
+    input: RenameWorkspaceCollectionInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        rename_collection_in_workspace(&app_data_dir, input)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_collection_rename_failed",
+            "The collection rename operation stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn create_workspace_collection(
+    app: AppHandle,
+    input: CreateWorkspaceCollectionInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        create_collection_in_workspace(&app_data_dir, input)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_collection_create_failed",
+            "The collection creation operation stopped unexpectedly.",
         )
     })?
 }
@@ -492,6 +594,14 @@ fn write_workspace_collections(
     collections: &[WorkspaceCollection],
 ) -> Result<(), WorkspaceCommandError> {
     let collections_directory = directory.join("collections");
+    write_collection_files(&collections_directory, collections)?;
+    write_new_file(&directory.join("environments").join(".gitkeep"), b"")
+}
+
+fn write_collection_files(
+    collections_directory: &Path,
+    collections: &[WorkspaceCollection],
+) -> Result<(), WorkspaceCommandError> {
     if collections.is_empty() {
         write_new_file(&collections_directory.join(".gitkeep"), b"")?;
     } else {
@@ -509,7 +619,7 @@ fn write_workspace_collections(
             )?;
         }
     }
-    write_new_file(&directory.join("environments").join(".gitkeep"), b"")
+    Ok(())
 }
 
 fn file_slug(value: &str) -> String {
@@ -535,16 +645,23 @@ fn validate_collections(collections: &[WorkspaceCollection]) -> Result<(), Works
     if collections.len() > 500 {
         return Err(invalid_collections_error());
     }
+    let mut collection_names = HashSet::new();
+    let mut request_ids = HashSet::new();
     for collection in collections {
-        if !valid_text(&collection.name, 100) || collection.requests.len() > 10_000 {
+        if !valid_text(&collection.name, 100)
+            || !collection_names.insert(collection.name.to_lowercase())
+            || collection.requests.len() > 10_000
+        {
             return Err(invalid_collections_error());
         }
         for request in &collection.requests {
             if !valid_text(&request.id, 100)
+                || !request_ids.insert(request.id.clone())
                 || !valid_text(&request.name, 200)
                 || request.path.trim().is_empty()
                 || request.path.len() > 16_384
                 || request.body.len() > MAX_COLLECTION_FILE_BYTES as usize
+                || !is_http_url(&request.path)
                 || !matches!(
                     request.method.as_str(),
                     "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
@@ -555,6 +672,12 @@ fn validate_collections(collections: &[WorkspaceCollection]) -> Result<(), Works
         }
     }
     Ok(())
+}
+
+fn is_http_url(value: &str) -> bool {
+    Url::parse(value)
+        .map(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+        .unwrap_or(false)
 }
 
 fn valid_text(value: &str, maximum_length: usize) -> bool {
@@ -660,6 +783,251 @@ fn application_data_directory(app: &AppHandle) -> Result<PathBuf, WorkspaceComma
             "GetRest could not access its local application data directory.",
         )
     })
+}
+
+fn save_request_to_workspace(
+    app_data_dir: &Path,
+    input: SaveWorkspaceRequestInput,
+) -> Result<SaveWorkspaceRequestResult, WorkspaceCommandError> {
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let collection_name = input.collection_name.trim();
+    let request = WorkspaceRequest {
+        id: input
+            .request
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: input.request.name.trim().to_owned(),
+        method: input.request.method,
+        path: input.request.path.trim().to_owned(),
+        body: input.request.body,
+    };
+
+    let mut collections = read_workspace_collections(directory)?;
+    for collection in &mut collections {
+        collection
+            .requests
+            .retain(|existing| existing.id != request.id);
+    }
+    if let Some(collection) = collections
+        .iter_mut()
+        .find(|collection| collection.name.eq_ignore_ascii_case(collection_name))
+    {
+        collection.requests.push(request.clone());
+    } else {
+        collections.push(WorkspaceCollection {
+            name: collection_name.to_owned(),
+            requests: vec![request.clone()],
+        });
+    }
+    validate_collections(&collections)?;
+    replace_workspace_collections(directory, &collections)?;
+
+    let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
+    remember_workspace(app_data_dir, &updated_workspace)?;
+    Ok(SaveWorkspaceRequestResult {
+        workspace: updated_workspace,
+        collections,
+        request,
+    })
+}
+
+fn rename_collection_in_workspace(
+    app_data_dir: &Path,
+    input: RenameWorkspaceCollectionInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let current_name = input.current_name.trim();
+    let new_name = input.new_name.trim();
+    if !valid_text(current_name, 100) || !valid_text(new_name, 100) {
+        return Err(WorkspaceCommandError::new(
+            "invalid_collection_name",
+            "Enter a valid collection name with at most 100 characters.",
+        ));
+    }
+
+    let mut collections = read_workspace_collections(directory)?;
+    let current_index = collections
+        .iter()
+        .position(|collection| collection.name == current_name)
+        .ok_or_else(|| {
+            WorkspaceCommandError::new(
+                "collection_not_found",
+                "The selected collection no longer exists.",
+            )
+        })?;
+    if collections.iter().enumerate().any(|(index, collection)| {
+        index != current_index && collection.name.eq_ignore_ascii_case(new_name)
+    }) {
+        return Err(WorkspaceCommandError::new(
+            "collection_name_conflict",
+            "Another collection already uses this name.",
+        ));
+    }
+    if collections[current_index].name == new_name {
+        return Ok(WorkspaceCollectionsMutationResult {
+            workspace,
+            collections,
+        });
+    }
+
+    collections[current_index].name = new_name.to_owned();
+    validate_collections(&collections)?;
+    replace_workspace_collections(directory, &collections)?;
+    let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
+    remember_workspace(app_data_dir, &updated_workspace)?;
+    Ok(WorkspaceCollectionsMutationResult {
+        workspace: updated_workspace,
+        collections,
+    })
+}
+
+fn create_collection_in_workspace(
+    app_data_dir: &Path,
+    input: CreateWorkspaceCollectionInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let name = input.name.trim();
+    if !valid_text(name, 100) {
+        return Err(WorkspaceCommandError::new(
+            "invalid_collection_name",
+            "Enter a valid collection name with at most 100 characters.",
+        ));
+    }
+    let mut collections = read_workspace_collections(directory)?;
+    if collections
+        .iter()
+        .any(|collection| collection.name.eq_ignore_ascii_case(name))
+    {
+        return Err(WorkspaceCommandError::new(
+            "collection_name_conflict",
+            "Another collection already uses this name.",
+        ));
+    }
+    collections.push(WorkspaceCollection {
+        name: name.to_owned(),
+        requests: Vec::new(),
+    });
+    validate_collections(&collections)?;
+    replace_workspace_collections(directory, &collections)?;
+    let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
+    remember_workspace(app_data_dir, &updated_workspace)?;
+    Ok(WorkspaceCollectionsMutationResult {
+        workspace: updated_workspace,
+        collections,
+    })
+}
+
+fn verify_workspace_identity(
+    directory: &Path,
+    expected_id: &str,
+) -> Result<WorkspaceManifest, WorkspaceCommandError> {
+    let manifest_path = directory.join(WORKSPACE_MANIFEST);
+    let metadata = fs::symlink_metadata(&manifest_path).map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_unavailable",
+            "The workspace manifest could not be inspected.",
+        )
+    })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(WorkspaceCommandError::new(
+            "workspace_unavailable",
+            "The workspace manifest is not a regular file.",
+        ));
+    }
+    let manifest =
+        serde_json::from_slice::<WorkspaceManifest>(&fs::read(&manifest_path).map_err(|_| {
+            WorkspaceCommandError::new(
+                "workspace_unavailable",
+                "The workspace manifest could not be read.",
+            )
+        })?)
+        .map_err(|_| {
+            WorkspaceCommandError::new(
+                "workspace_unavailable",
+                "The workspace manifest is not valid.",
+            )
+        })?;
+    if manifest.id != expected_id {
+        return Err(WorkspaceCommandError::new(
+            "workspace_identity_mismatch",
+            "The selected folder belongs to a different workspace.",
+        ));
+    }
+    Ok(manifest)
+}
+
+fn replace_workspace_collections(
+    directory: &Path,
+    collections: &[WorkspaceCollection],
+) -> Result<(), WorkspaceCommandError> {
+    let collections_directory = directory.join("collections");
+    validate_collection_directory_entries(&collections_directory)?;
+
+    let operation_id = Uuid::new_v4().to_string();
+    let staging = directory.join(format!(".getrest-collections-{operation_id}"));
+    let backup = directory.join(format!(".getrest-collections-backup-{operation_id}"));
+    fs::create_dir(&staging).map_err(|_| request_save_error())?;
+    if let Err(error) = write_collection_files(&staging, collections) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if fs::rename(&collections_directory, &backup).is_err() {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(request_save_error());
+    }
+    if fs::rename(&staging, &collections_directory).is_err() {
+        let _ = fs::rename(&backup, &collections_directory);
+        let _ = fs::remove_dir_all(&staging);
+        return Err(request_save_error());
+    }
+    fs::remove_dir_all(&backup).map_err(|_| request_save_error())
+}
+
+fn validate_collection_directory_entries(
+    collections_directory: &Path,
+) -> Result<(), WorkspaceCommandError> {
+    let metadata = fs::symlink_metadata(collections_directory).map_err(|_| request_save_error())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(request_save_error());
+    }
+    for entry in fs::read_dir(collections_directory).map_err(|_| request_save_error())? {
+        let entry = entry.map_err(|_| request_save_error())?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|_| request_save_error())?;
+        let is_supported_file = metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && (path.file_name().is_some_and(|name| name == ".gitkeep")
+                || path
+                    .extension()
+                    .is_some_and(|extension| extension == "json"));
+        if !is_supported_file {
+            return Err(WorkspaceCommandError::new(
+                "workspace_collections_unsupported",
+                "The collections folder contains files GetRest cannot safely replace.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn request_save_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "workspace_request_save_failed",
+        "The request could not be written safely to the workspace.",
+    )
 }
 
 fn rename_workspace_repository(
@@ -1130,5 +1498,195 @@ mod tests {
             String::from_utf8_lossy(&log.stdout).trim(),
             RENAME_COMMIT_MESSAGE
         );
+    }
+
+    #[test]
+    fn creates_and_updates_a_saved_request_without_committing_it() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: Vec::new(),
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+
+        let saved = save_request_to_workspace(
+            app_data.path(),
+            SaveWorkspaceRequestInput {
+                workspace_id: created.id.clone(),
+                collection_name: "Public API".to_owned(),
+                request: UnsavedWorkspaceRequest {
+                    id: None,
+                    name: "Todo details".to_owned(),
+                    method: "GET".to_owned(),
+                    path: "https://example.com/todos/1".to_owned(),
+                    body: String::new(),
+                },
+            },
+        )
+        .expect("request should be saved");
+
+        assert_eq!(saved.collections.len(), 1);
+        assert_eq!(saved.collections[0].requests.len(), 1);
+        assert!(matches!(
+            saved.workspace.git_state,
+            WorkspaceGitState::Changes
+        ));
+        let updated = save_request_to_workspace(
+            app_data.path(),
+            SaveWorkspaceRequestInput {
+                workspace_id: created.id,
+                collection_name: "Other API".to_owned(),
+                request: UnsavedWorkspaceRequest {
+                    id: Some(saved.request.id.clone()),
+                    name: "Updated todo".to_owned(),
+                    method: "GET".to_owned(),
+                    path: "https://example.com/todos/2".to_owned(),
+                    body: String::new(),
+                },
+            },
+        )
+        .expect("request should be updated");
+
+        assert_eq!(
+            updated
+                .collections
+                .iter()
+                .flat_map(|collection| &collection.requests)
+                .filter(|request| request.id == saved.request.id)
+                .count(),
+            1
+        );
+        assert_eq!(updated.request.name, "Updated todo");
+        assert_eq!(
+            run_git(directory.path(), &["log", "--pretty=%s"], "git_log_failed")
+                .unwrap()
+                .stdout
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn refuses_to_replace_unmanaged_collection_files() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: Vec::new(),
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+        let unmanaged = directory.path().join("collections/notes.txt");
+        fs::write(&unmanaged, "keep me").unwrap();
+
+        let error = save_request_to_workspace(
+            app_data.path(),
+            SaveWorkspaceRequestInput {
+                workspace_id: created.id,
+                collection_name: "Public API".to_owned(),
+                request: UnsavedWorkspaceRequest {
+                    id: None,
+                    name: "Todo details".to_owned(),
+                    method: "GET".to_owned(),
+                    path: "https://example.com/todos/1".to_owned(),
+                    body: String::new(),
+                },
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "workspace_collections_unsupported");
+        assert_eq!(fs::read_to_string(unmanaged).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn renames_a_collection_and_preserves_its_requests() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: vec![WorkspaceCollection {
+                name: "Public API".to_owned(),
+                requests: vec![WorkspaceRequest {
+                    id: "todo".to_owned(),
+                    name: "Todo details".to_owned(),
+                    method: "GET".to_owned(),
+                    path: "https://example.com/todos/1".to_owned(),
+                    body: String::new(),
+                }],
+            }],
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+
+        let renamed = rename_collection_in_workspace(
+            app_data.path(),
+            RenameWorkspaceCollectionInput {
+                workspace_id: created.id,
+                current_name: "Public API".to_owned(),
+                new_name: "Internal API".to_owned(),
+            },
+        )
+        .expect("collection should be renamed");
+
+        assert_eq!(renamed.collections[0].name, "Internal API");
+        assert_eq!(renamed.collections[0].requests[0].id, "todo");
+        assert!(matches!(
+            renamed.workspace.git_state,
+            WorkspaceGitState::Changes
+        ));
+        let stored = read_workspace_collections(directory.path()).unwrap();
+        assert_eq!(stored[0].name, "Internal API");
+    }
+
+    #[test]
+    fn creates_and_persists_an_empty_collection() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: Vec::new(),
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+
+        let result = create_collection_in_workspace(
+            app_data.path(),
+            CreateWorkspaceCollectionInput {
+                workspace_id: created.id.clone(),
+                name: "Empty API".to_owned(),
+            },
+        )
+        .expect("collection should be created");
+
+        assert_eq!(result.collections.len(), 1);
+        assert_eq!(result.collections[0].name, "Empty API");
+        assert!(result.collections[0].requests.is_empty());
+        assert!(matches!(
+            result.workspace.git_state,
+            WorkspaceGitState::Changes
+        ));
+        let stored = read_workspace_collections(directory.path()).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].name, "Empty API");
+        assert!(stored[0].requests.is_empty());
+
+        let error = create_collection_in_workspace(
+            app_data.path(),
+            CreateWorkspaceCollectionInput {
+                workspace_id: created.id,
+                name: "empty api".to_owned(),
+            },
+        )
+        .expect_err("collection names should be unique");
+        assert_eq!(error.code, "collection_name_conflict");
     }
 }

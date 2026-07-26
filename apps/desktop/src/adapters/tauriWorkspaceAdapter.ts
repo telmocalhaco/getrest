@@ -1,8 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CreateWorkspaceInput,
+  CreateWorkspaceCollectionInput,
   RenameWorkspaceInput,
+  RenameWorkspaceCollectionInput,
+  SaveWorkspaceRequestInput,
+  SaveWorkspaceRequestResult,
   WorkspaceCollection,
+  WorkspaceCollectionsMutationResult,
   WorkspaceSummary,
 } from "../domain/workspace";
 
@@ -57,6 +62,32 @@ export async function invokeLoadWorkspaceCollections(
   return invokeCommand<WorkspaceCollection[]>("load_workspace_collections", {
     id,
   });
+}
+
+export async function invokeSaveWorkspaceRequest(
+  input: SaveWorkspaceRequestInput,
+): Promise<SaveWorkspaceRequestResult> {
+  return invokeCommand<SaveWorkspaceRequestResult>("save_workspace_request", {
+    input,
+  });
+}
+
+export async function invokeRenameWorkspaceCollection(
+  input: RenameWorkspaceCollectionInput,
+): Promise<WorkspaceCollectionsMutationResult> {
+  return invokeCommand<WorkspaceCollectionsMutationResult>(
+    "rename_workspace_collection",
+    { input },
+  );
+}
+
+export async function invokeCreateWorkspaceCollection(
+  input: CreateWorkspaceCollectionInput,
+): Promise<WorkspaceCollectionsMutationResult> {
+  return invokeCommand<WorkspaceCollectionsMutationResult>(
+    "create_workspace_collection",
+    { input },
+  );
 }
 
 async function invokeCommand<T>(

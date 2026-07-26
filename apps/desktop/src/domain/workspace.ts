@@ -37,3 +37,33 @@ export interface RenameWorkspaceInput {
   id: string;
   name: string;
 }
+
+export interface SaveWorkspaceRequestInput {
+  workspaceId: string;
+  collectionName: string;
+  request: Omit<WorkspaceRequest, "id"> & {
+    id: string | null;
+  };
+}
+
+export interface SaveWorkspaceRequestResult {
+  workspace: WorkspaceSummary;
+  collections: WorkspaceCollection[];
+  request: WorkspaceRequest;
+}
+
+export interface RenameWorkspaceCollectionInput {
+  workspaceId: string;
+  currentName: string;
+  newName: string;
+}
+
+export interface CreateWorkspaceCollectionInput {
+  workspaceId: string;
+  name: string;
+}
+
+export interface WorkspaceCollectionsMutationResult {
+  workspace: WorkspaceSummary;
+  collections: WorkspaceCollection[];
+}

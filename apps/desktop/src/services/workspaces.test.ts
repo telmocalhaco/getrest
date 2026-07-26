@@ -2,20 +2,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   invokeActivateWorkspace,
   invokeChooseWorkspaceDirectory,
+  invokeCreateWorkspaceCollection,
   invokeCreateWorkspace,
   invokeGetActiveWorkspace,
   invokeListWorkspaces,
   invokeLoadWorkspaceCollections,
   invokeRenameWorkspace,
+  invokeRenameWorkspaceCollection,
+  invokeSaveWorkspaceRequest,
   WorkspaceCommandError,
 } from "../adapters/tauriWorkspaceAdapter";
 import {
   activateWorkspace,
+  createWorkspaceCollection,
   createWorkspace,
   getActiveWorkspace,
   listWorkspaces,
   loadWorkspaceCollections,
   renameWorkspace,
+  renameWorkspaceCollection,
+  saveWorkspaceRequest,
   selectWorkspaceDirectory,
   WorkspaceServiceError,
 } from "./workspaces";
@@ -33,32 +39,45 @@ vi.mock("../adapters/tauriWorkspaceAdapter", () => {
   return {
     invokeActivateWorkspace: vi.fn(),
     invokeChooseWorkspaceDirectory: vi.fn(),
+    invokeCreateWorkspaceCollection: vi.fn(),
     invokeCreateWorkspace: vi.fn(),
     invokeGetActiveWorkspace: vi.fn(),
     invokeListWorkspaces: vi.fn(),
     invokeLoadWorkspaceCollections: vi.fn(),
     invokeRenameWorkspace: vi.fn(),
+    invokeRenameWorkspaceCollection: vi.fn(),
+    invokeSaveWorkspaceRequest: vi.fn(),
     WorkspaceCommandError: MockWorkspaceCommandError,
   };
 });
 
 const activateWorkspaceMock = vi.mocked(invokeActivateWorkspace);
 const chooseDirectoryMock = vi.mocked(invokeChooseWorkspaceDirectory);
+const createWorkspaceCollectionMock = vi.mocked(
+  invokeCreateWorkspaceCollection,
+);
 const createWorkspaceMock = vi.mocked(invokeCreateWorkspace);
 const getActiveWorkspaceMock = vi.mocked(invokeGetActiveWorkspace);
 const listWorkspacesMock = vi.mocked(invokeListWorkspaces);
 const loadWorkspaceCollectionsMock = vi.mocked(invokeLoadWorkspaceCollections);
 const renameWorkspaceMock = vi.mocked(invokeRenameWorkspace);
+const renameWorkspaceCollectionMock = vi.mocked(
+  invokeRenameWorkspaceCollection,
+);
+const saveWorkspaceRequestMock = vi.mocked(invokeSaveWorkspaceRequest);
 
 describe("workspace service", () => {
   beforeEach(() => {
     activateWorkspaceMock.mockReset();
     chooseDirectoryMock.mockReset();
+    createWorkspaceCollectionMock.mockReset();
     createWorkspaceMock.mockReset();
     getActiveWorkspaceMock.mockReset();
     listWorkspacesMock.mockReset();
     loadWorkspaceCollectionsMock.mockReset();
     renameWorkspaceMock.mockReset();
+    renameWorkspaceCollectionMock.mockReset();
+    saveWorkspaceRequestMock.mockReset();
   });
 
   it("selects the workspace directory through the native adapter", async () => {
@@ -145,5 +164,105 @@ describe("workspace service", () => {
       id: "workspace-1",
     });
     await expect(loadWorkspaceCollections("workspace-1")).resolves.toEqual([]);
+  });
+
+  it("normalizes and saves a request in a workspace collection", async () => {
+    saveWorkspaceRequestMock.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "Workspace",
+        path: "/tmp/workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [],
+      request: {
+        id: "request-1",
+        name: "Todo",
+        method: "GET",
+        path: "https://example.com/todos/1",
+        body: "",
+      },
+    });
+
+    await saveWorkspaceRequest(" workspace-1 ", " Public API ", {
+      id: null,
+      name: " Todo ",
+      method: "GET",
+      path: " https://example.com/todos/1 ",
+      body: "",
+    });
+
+    expect(saveWorkspaceRequestMock).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      collectionName: "Public API",
+      request: {
+        id: null,
+        name: "Todo",
+        method: "GET",
+        path: "https://example.com/todos/1",
+        body: "",
+      },
+    });
+  });
+
+  it("rejects unsupported request URLs before native persistence", async () => {
+    await expect(
+      saveWorkspaceRequest("workspace-1", "Public API", {
+        id: null,
+        name: "Local file",
+        method: "GET",
+        path: "file:///tmp/data.json",
+        body: "",
+      }),
+    ).rejects.toMatchObject({
+      code: "invalid_request_url",
+    });
+    expect(saveWorkspaceRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("normalizes collection names before renaming", async () => {
+    renameWorkspaceCollectionMock.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "Workspace",
+        path: "/tmp/workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [],
+    });
+
+    await renameWorkspaceCollection(
+      " workspace-1 ",
+      " Public API ",
+      " Internal API ",
+    );
+
+    expect(renameWorkspaceCollectionMock).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      currentName: "Public API",
+      newName: "Internal API",
+    });
+  });
+
+  it("normalizes collection names before creating them", async () => {
+    createWorkspaceCollectionMock.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "Workspace",
+        path: "/tmp/workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [{ name: "Empty API", requests: [] }],
+    });
+
+    await createWorkspaceCollection(" workspace-1 ", " Empty API ");
+
+    expect(createWorkspaceCollectionMock).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      name: "Empty API",
+    });
   });
 });

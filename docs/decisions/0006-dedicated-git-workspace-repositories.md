@@ -58,6 +58,18 @@ updates the manifest and creates a commit in that workspace repository. The
 local registry can contain several workspaces, with one marked as most recently
 active; changing workspace loads its own collection files.
 
+Saving a request explicitly creates or updates its item in a collection file.
+Requests and collections can be renamed without changing stable request
+identifiers or the requests contained by a collection. Collection names remain
+unique without regard to ASCII letter case.
+Collections can also be created without requests and remain as explicit,
+versionable collection files in the workspace repository.
+Request saves do not create automatic Git commits: the repository remains with
+visible working-tree changes so the user can review and version related edits
+together. Collection directory replacement uses a same-filesystem staging
+directory, rejects symbolic links and unmanaged files, and restores the
+previous directory when the swap cannot be completed.
+
 ## Consequences
 
 - Workspace history remains separate from application development history.

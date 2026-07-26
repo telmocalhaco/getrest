@@ -193,6 +193,26 @@ repository. The workspace selector can activate registered workspaces, rename
 the active workspace, or start the creation of another one. Renames update both
 the versioned manifest and the local registry.
 
+The request editor uses an explicit save action. Saving creates or updates the
+request by stable identifier in the selected collection, then atomically
+replaces the managed collection directory. These edits remain uncommitted and
+are reflected by the workspace Git status. The Rust boundary validates names,
+methods, HTTP(S) URLs, sizes, workspace identity, and filesystem entry types
+before changing files.
+
+Request renames use the same stable-identifier update path. Collection renames
+change only the collection name, preserve its request order and identifiers,
+and reject conflicts with existing collection names.
+
+Empty collections use the same native persistence boundary and are written
+immediately to the workspace repository. The interface keeps collection names
+independently from their requests so an empty collection remains visible after
+loading or switching workspaces.
+
+Creating a new request starts an in-memory draft from the request actions menu.
+It becomes a workspace item only after the explicit save flow assigns a name,
+collection, and stable identifier.
+
 A workspace without a Git remote is local-only. A remote can be associated
 later for backup and collaboration. Git commands are executed by the Rust core
 with controlled arguments and never through an arbitrary shell interface.
