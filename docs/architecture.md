@@ -213,6 +213,12 @@ Creating a new request starts an in-memory draft from the request actions menu.
 It becomes a workspace item only after the explicit save flow assigns a name,
 collection, and stable identifier.
 
+Deleting a request preserves its collection even when it becomes empty.
+Deleting a collection removes every request it contains and therefore requires
+an explicit confirmation that reports the affected request count. Both
+operations atomically replace the managed collection directory and remain
+uncommitted so Git can be used to review or restore the deleted files.
+
 A workspace without a Git remote is local-only. A remote can be associated
 later for backup and collaboration. Git commands are executed by the Rust core
 with controlled arguments and never through an arbitrary shell interface.

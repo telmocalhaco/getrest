@@ -18,6 +18,8 @@ const workspaceMocks = vi.hoisted(() => {
     activate: vi.fn(),
     createCollection: vi.fn(),
     create: vi.fn(),
+    deleteCollection: vi.fn(),
+    deleteRequest: vi.fn(),
     getActive: vi.fn(),
     list: vi.fn(),
     loadCollections: vi.fn(),
@@ -36,6 +38,8 @@ vi.mock("./services/workspaces", () => ({
   activateWorkspace: workspaceMocks.activate,
   createWorkspaceCollection: workspaceMocks.createCollection,
   createWorkspace: workspaceMocks.create,
+  deleteWorkspaceCollection: workspaceMocks.deleteCollection,
+  deleteWorkspaceRequest: workspaceMocks.deleteRequest,
   getActiveWorkspace: workspaceMocks.getActive,
   listWorkspaces: workspaceMocks.list,
   loadWorkspaceCollections: workspaceMocks.loadCollections,
@@ -52,6 +56,8 @@ describe("GetRest desktop shell", () => {
     workspaceMocks.activate.mockReset();
     workspaceMocks.createCollection.mockReset();
     workspaceMocks.create.mockReset();
+    workspaceMocks.deleteCollection.mockReset();
+    workspaceMocks.deleteRequest.mockReset();
     workspaceMocks.getActive.mockReset();
     workspaceMocks.list.mockReset();
     workspaceMocks.loadCollections.mockReset();
@@ -148,6 +154,26 @@ describe("GetRest desktop shell", () => {
         },
         { name: "Empty API", requests: [] },
       ],
+    });
+    workspaceMocks.deleteRequest.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "getrest-demo-workspace",
+        path: "/tmp/getrest-demo-workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [{ name: "Public API", requests: [] }],
+    });
+    workspaceMocks.deleteCollection.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "getrest-demo-workspace",
+        path: "/tmp/getrest-demo-workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [],
     });
     sendRestRequestMock.mockResolvedValue({
       status: 200,
@@ -493,6 +519,171 @@ describe("GetRest desktop shell", () => {
     expect(
       await screen.findByRole("button", { name: /Empty API 0/ }),
     ).toBeVisible();
+  });
+
+  it("deletes a saved request after explicit confirmation", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(screen.getByRole("button", { name: "Request options" }));
+    await user.click(screen.getByRole("menuitem", { name: /Delete request/ }));
+    const dialog = screen.getByRole("dialog", { name: "Delete request" });
+    expect(within(dialog).getByText(/Todo details/)).toBeVisible();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete request" }),
+    );
+
+    expect(workspaceMocks.deleteRequest).toHaveBeenCalledWith(
+      "workspace-1",
+      "todo",
+    );
+    expect(
+      await screen.findByRole("heading", { name: "New request" }),
+    ).toBeVisible();
+  });
+
+  it("deletes a collection and warns about its contained requests", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(
+      screen.getByRole("button", { name: "Collection options" }),
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: /Delete collection/ }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Delete collection" });
+    expect(within(dialog).getByText(/1 contained request/)).toBeVisible();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete collection" }),
+    );
+
+    expect(workspaceMocks.deleteCollection).toHaveBeenCalledWith(
+      "workspace-1",
+      "Public API",
+    );
+    expect(
+      await screen.findByRole("heading", { name: "New request" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /Public API/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("can select and delete an empty collection", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://jsonplaceholder.typicode.com/todos/1",
+            body: "",
+          },
+        ],
+      },
+      { name: "Empty API", requests: [] },
+    ]);
+    workspaceMocks.deleteCollection.mockResolvedValueOnce({
+      workspace: {
+        ...activeWorkspace,
+        gitState: "changes",
+      },
+      collections: [
+        {
+          name: "Public API",
+          requests: [
+            {
+              id: "todo",
+              name: "Todo details",
+              method: "GET",
+              path: "https://jsonplaceholder.typicode.com/todos/1",
+              body: "",
+            },
+          ],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(
+      screen.getByRole("button", { name: "Collection options" }),
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: /Delete collection/ }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Delete collection" });
+    await user.selectOptions(
+      within(dialog).getByLabelText("Collection to delete"),
+      "Empty API",
+    );
+    expect(within(dialog).getByText(/0 contained requests/)).toBeVisible();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete collection" }),
+    );
+
+    expect(workspaceMocks.deleteCollection).toHaveBeenCalledWith(
+      "workspace-1",
+      "Empty API",
+    );
   });
 
   it("creates a dedicated local workspace from a selected folder", async () => {

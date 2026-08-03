@@ -15,6 +15,8 @@ import {
   activateWorkspace,
   createWorkspace,
   createWorkspaceCollection,
+  deleteWorkspaceCollection,
+  deleteWorkspaceRequest,
   getActiveWorkspace,
   listWorkspaces,
   loadWorkspaceCollections,
@@ -42,7 +44,8 @@ type IconName =
   | "search"
   | "save"
   | "send"
-  | "sidebar";
+  | "sidebar"
+  | "trash";
 interface RequestExample {
   id: string;
   name: string;
@@ -51,6 +54,10 @@ interface RequestExample {
   collection: string;
   body: string;
 }
+
+type DeleteTarget =
+  | { type: "request"; id: string; name: string }
+  | { type: "collection"; name: string; requestCount: number };
 
 const initialRequests: RequestExample[] = [
   {
@@ -172,6 +179,11 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
       <>
         <rect x="3" y="4" width="18" height="16" rx="2" />
         <path d="M8 4v16" />
+      </>
+    ),
+    trash: (
+      <>
+        <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" />
       </>
     ),
   };
@@ -338,6 +350,9 @@ function App() {
   const [collectionDialogPurpose, setCollectionDialogPurpose] = useState<
     "create" | "rename"
   >("rename");
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const selected = selectedId
     ? (requests.find((request) => request.id === selectedId) ??
       requests[0] ??
@@ -629,6 +644,13 @@ function App() {
     setSaveDialogOpen(true);
   };
 
+  const openDeleteRequestDialog = () => {
+    if (!workspace || !selected.id) return;
+    setRequestMenuOpen(false);
+    setDeleteError(null);
+    setDeleteTarget({ type: "request", id: selected.id, name: selected.name });
+  };
+
   const createRequestDraft = () => {
     if (!workspace) return;
     setRequestMenuOpen(false);
@@ -695,6 +717,45 @@ function App() {
     setRenameCollectionName("");
     setRenameCollectionError(null);
     setRenameCollectionDialogOpen(true);
+  };
+
+  const openDeleteCollectionDialog = () => {
+    if (!workspace || collections.length === 0) return;
+    setCollectionMenuOpen(false);
+    const name =
+      selected.collection && collections.includes(selected.collection)
+        ? selected.collection
+        : collections[0];
+    setDeleteError(null);
+    setDeleteTarget({
+      type: "collection",
+      name,
+      requestCount: requests.filter((request) => request.collection === name)
+        .length,
+    });
+  };
+
+  const submitDelete = async () => {
+    if (!workspace || !deleteTarget || isDeleting) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const result =
+        deleteTarget.type === "request"
+          ? await deleteWorkspaceRequest(workspace.id, deleteTarget.id)
+          : await deleteWorkspaceCollection(workspace.id, deleteTarget.name);
+      setWorkspace(result.workspace);
+      applyCollections(result.collections);
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error
+          ? error.message
+          : `The ${deleteTarget.type} could not be deleted.`,
+      );
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const submitRenameCollection = async () => {
@@ -892,6 +953,19 @@ function App() {
                     <small>Change an existing collection name</small>
                   </span>
                 </button>
+                <button
+                  className="danger-action"
+                  disabled={collections.length === 0}
+                  onClick={openDeleteCollectionDialog}
+                  role="menuitem"
+                  type="button"
+                >
+                  <Icon name="trash" size={15} />
+                  <span>
+                    <strong>Delete collection</strong>
+                    <small>Remove it and all contained requests</small>
+                  </span>
+                </button>
               </div>
             )}
           </div>
@@ -1027,6 +1101,19 @@ function App() {
                     <span>
                       <strong>Rename request</strong>
                       <small>Change the selected item name</small>
+                    </span>
+                  </button>
+                  <button
+                    className="danger-action"
+                    disabled={!workspace || !selected.id}
+                    onClick={openDeleteRequestDialog}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <Icon name="trash" size={15} />
+                    <span>
+                      <strong>Delete request</strong>
+                      <small>Remove the selected saved item</small>
                     </span>
                   </button>
                 </div>
@@ -1256,6 +1343,95 @@ function App() {
           </span>
         </footer>
       </section>
+      {deleteTarget && (
+        <div className="modal-backdrop">
+          <section
+            aria-labelledby="delete-dialog-title"
+            aria-modal="true"
+            className="workspace-dialog save-request-dialog"
+            role="dialog"
+          >
+            <header className="workspace-dialog-header">
+              <div>
+                <span className="eyebrow">Permanent workspace change</span>
+                <h2 id="delete-dialog-title">Delete {deleteTarget.type}</h2>
+              </div>
+              <button
+                aria-label="Close delete dialog"
+                className="icon-button workspace-close-button"
+                disabled={isDeleting}
+                onClick={() => setDeleteTarget(null)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <div className="workspace-dialog-content">
+              {deleteTarget.type === "collection" && (
+                <label className="workspace-field">
+                  <span>Collection</span>
+                  <select
+                    aria-label="Collection to delete"
+                    autoFocus
+                    disabled={isDeleting}
+                    onChange={(event) => {
+                      const name = event.target.value;
+                      setDeleteError(null);
+                      setDeleteTarget({
+                        type: "collection",
+                        name,
+                        requestCount: requests.filter(
+                          (request) => request.collection === name,
+                        ).length,
+                      });
+                    }}
+                    value={deleteTarget.name}
+                  >
+                    {collections.map((collection) => (
+                      <option key={collection} value={collection}>
+                        {collection}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <p>
+                {deleteTarget.type === "request"
+                  ? `Delete “${deleteTarget.name}” from its collection?`
+                  : `Delete “${deleteTarget.name}” and ${deleteTarget.requestCount} contained ${deleteTarget.requestCount === 1 ? "request" : "requests"}?`}
+              </p>
+              <div className="delete-warning">
+                The files will be removed from the workspace without creating an
+                automatic Git commit. You can review or restore the change with
+                Git until it is committed.
+              </div>
+              {deleteError && (
+                <div aria-live="polite" className="workspace-error">
+                  {deleteError}
+                </div>
+              )}
+            </div>
+            <footer className="workspace-dialog-actions">
+              <button
+                className="plain-button"
+                disabled={isDeleting}
+                onClick={() => setDeleteTarget(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="danger-button"
+                disabled={isDeleting}
+                onClick={submitDelete}
+                type="button"
+              >
+                {isDeleting ? "Deleting…" : `Delete ${deleteTarget.type}`}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
       {renameCollectionDialogOpen && (
         <div className="modal-backdrop">
           <section

@@ -1,6 +1,8 @@
 import {
   invokeChooseWorkspaceDirectory,
   invokeCreateWorkspaceCollection,
+  invokeDeleteWorkspaceCollection,
+  invokeDeleteWorkspaceRequest,
   invokeActivateWorkspace,
   invokeCreateWorkspace,
   invokeGetActiveWorkspace,
@@ -207,6 +209,58 @@ export async function createWorkspaceCollection(
   return runWorkspaceOperation(() =>
     invokeCreateWorkspaceCollection({
       workspaceId: workspaceId.trim(),
+      name: normalizedName,
+    }),
+  );
+}
+
+export async function deleteWorkspaceRequest(
+  workspaceId: string,
+  requestId: string,
+) {
+  const normalizedWorkspaceId = workspaceId.trim();
+  const normalizedRequestId = requestId.trim();
+  if (!normalizedWorkspaceId) {
+    throw new WorkspaceServiceError(
+      "workspace_required",
+      "Create or select a workspace before deleting a request.",
+    );
+  }
+  if (!normalizedRequestId) {
+    throw new WorkspaceServiceError(
+      "request_required",
+      "Select a saved request before deleting it.",
+    );
+  }
+  return runWorkspaceOperation(() =>
+    invokeDeleteWorkspaceRequest({
+      workspaceId: normalizedWorkspaceId,
+      requestId: normalizedRequestId,
+    }),
+  );
+}
+
+export async function deleteWorkspaceCollection(
+  workspaceId: string,
+  name: string,
+) {
+  const normalizedWorkspaceId = workspaceId.trim();
+  const normalizedName = name.trim();
+  if (!normalizedWorkspaceId) {
+    throw new WorkspaceServiceError(
+      "workspace_required",
+      "Create or select a workspace before deleting a collection.",
+    );
+  }
+  if (!normalizedName) {
+    throw new WorkspaceServiceError(
+      "invalid_collection_name",
+      "Select a collection before deleting it.",
+    );
+  }
+  return runWorkspaceOperation(() =>
+    invokeDeleteWorkspaceCollection({
+      workspaceId: normalizedWorkspaceId,
       name: normalizedName,
     }),
   );

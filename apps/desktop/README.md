@@ -24,9 +24,12 @@ rename the workspace, and keep its location in GetRest's local SQLite registry.
 The request editor can create or update collection items through an explicit
 save action. The collection options menu can create an empty collection or
 rename an existing one. Requests and collections can also be renamed while
-preserving stable request identifiers. Saved JSON changes remain uncommitted for review.
-The request options menu starts a new empty draft or renames the selected
-request without crowding the main request toolbar.
+preserving stable request identifiers. Both can be deleted through an explicit
+confirmation; deleting the last request preserves its empty collection, while
+deleting a collection removes all of its requests. Saved and deleted JSON
+changes remain uncommitted for review or recovery through Git. The request
+options menu starts a new empty draft or manages the selected request without
+crowding the main request toolbar.
 
 ## Recommended IDE Setup
 

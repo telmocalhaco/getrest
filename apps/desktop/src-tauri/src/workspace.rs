@@ -68,6 +68,20 @@ pub struct CreateWorkspaceCollectionInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteWorkspaceRequestInput {
+    workspace_id: String,
+    request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkspaceCollectionInput {
+    workspace_id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UnsavedWorkspaceRequest {
     id: Option<String>,
     name: String,
@@ -350,6 +364,42 @@ pub async fn create_workspace_collection(
         WorkspaceCommandError::new(
             "workspace_collection_create_failed",
             "The collection creation operation stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn delete_workspace_request(
+    app: AppHandle,
+    input: DeleteWorkspaceRequestInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_request_from_workspace(&app_data_dir, input)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_request_delete_failed",
+            "The request delete operation stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn delete_workspace_collection(
+    app: AppHandle,
+    input: DeleteWorkspaceCollectionInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_collection_from_workspace(&app_data_dir, input)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_collection_delete_failed",
+            "The collection delete operation stopped unexpectedly.",
         )
     })?
 }
@@ -922,6 +972,93 @@ fn create_collection_in_workspace(
     });
     validate_collections(&collections)?;
     replace_workspace_collections(directory, &collections)?;
+    let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
+    remember_workspace(app_data_dir, &updated_workspace)?;
+    Ok(WorkspaceCollectionsMutationResult {
+        workspace: updated_workspace,
+        collections,
+    })
+}
+
+fn delete_request_from_workspace(
+    app_data_dir: &Path,
+    input: DeleteWorkspaceRequestInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let request_id = input.request_id.trim();
+    if !valid_text(request_id, 100) {
+        return Err(WorkspaceCommandError::new(
+            "request_not_found",
+            "The selected request no longer exists.",
+        ));
+    }
+
+    let mut collections = read_workspace_collections(directory)?;
+    let previous_request_count: usize = collections
+        .iter()
+        .map(|collection| collection.requests.len())
+        .sum();
+    for collection in &mut collections {
+        collection
+            .requests
+            .retain(|request| request.id != request_id);
+    }
+    let request_count: usize = collections
+        .iter()
+        .map(|collection| collection.requests.len())
+        .sum();
+    if request_count == previous_request_count {
+        return Err(WorkspaceCommandError::new(
+            "request_not_found",
+            "The selected request no longer exists.",
+        ));
+    }
+
+    validate_collections(&collections)?;
+    replace_workspace_collections(directory, &collections)?;
+    collections_mutation_result(app_data_dir, workspace, collections)
+}
+
+fn delete_collection_from_workspace(
+    app_data_dir: &Path,
+    input: DeleteWorkspaceCollectionInput,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let name = input.name.trim();
+    if !valid_text(name, 100) {
+        return Err(WorkspaceCommandError::new(
+            "collection_not_found",
+            "The selected collection no longer exists.",
+        ));
+    }
+    let mut collections = read_workspace_collections(directory)?;
+    let collection_index = collections
+        .iter()
+        .position(|collection| collection.name == name)
+        .ok_or_else(|| {
+            WorkspaceCommandError::new(
+                "collection_not_found",
+                "The selected collection no longer exists.",
+            )
+        })?;
+    collections.remove(collection_index);
+
+    validate_collections(&collections)?;
+    replace_workspace_collections(directory, &collections)?;
+    collections_mutation_result(app_data_dir, workspace, collections)
+}
+
+fn collections_mutation_result(
+    app_data_dir: &Path,
+    workspace: WorkspaceSummary,
+    collections: Vec<WorkspaceCollection>,
+) -> Result<WorkspaceCollectionsMutationResult, WorkspaceCommandError> {
     let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
     remember_workspace(app_data_dir, &updated_workspace)?;
     Ok(WorkspaceCollectionsMutationResult {
@@ -1688,5 +1825,97 @@ mod tests {
         )
         .expect_err("collection names should be unique");
         assert_eq!(error.code, "collection_name_conflict");
+    }
+
+    #[test]
+    fn deletes_a_request_and_preserves_its_empty_collection() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: vec![WorkspaceCollection {
+                name: "Public API".to_owned(),
+                requests: vec![WorkspaceRequest {
+                    id: "todo".to_owned(),
+                    name: "Todo details".to_owned(),
+                    method: "GET".to_owned(),
+                    path: "https://example.com/todos/1".to_owned(),
+                    body: String::new(),
+                }],
+            }],
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+
+        let result = delete_request_from_workspace(
+            app_data.path(),
+            DeleteWorkspaceRequestInput {
+                workspace_id: created.id.clone(),
+                request_id: "todo".to_owned(),
+            },
+        )
+        .expect("request should be deleted");
+
+        assert_eq!(result.collections.len(), 1);
+        assert!(result.collections[0].requests.is_empty());
+        assert!(matches!(
+            result.workspace.git_state,
+            WorkspaceGitState::Changes
+        ));
+        let stored = read_workspace_collections(directory.path()).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].requests.is_empty());
+
+        let error = delete_request_from_workspace(
+            app_data.path(),
+            DeleteWorkspaceRequestInput {
+                workspace_id: created.id,
+                request_id: "todo".to_owned(),
+            },
+        )
+        .expect_err("deleted request should no longer exist");
+        assert_eq!(error.code, "request_not_found");
+    }
+
+    #[test]
+    fn deletes_a_collection_and_all_of_its_requests() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: vec![WorkspaceCollection {
+                name: "Public API".to_owned(),
+                requests: vec![WorkspaceRequest {
+                    id: "todo".to_owned(),
+                    name: "Todo details".to_owned(),
+                    method: "GET".to_owned(),
+                    path: "https://example.com/todos/1".to_owned(),
+                    body: String::new(),
+                }],
+            }],
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+
+        let result = delete_collection_from_workspace(
+            app_data.path(),
+            DeleteWorkspaceCollectionInput {
+                workspace_id: created.id,
+                name: "Public API".to_owned(),
+            },
+        )
+        .expect("collection should be deleted");
+
+        assert!(result.collections.is_empty());
+        assert!(matches!(
+            result.workspace.git_state,
+            WorkspaceGitState::Changes
+        ));
+        assert!(directory.path().join("collections/.gitkeep").is_file());
+        assert!(read_workspace_collections(directory.path())
+            .unwrap()
+            .is_empty());
     }
 }
