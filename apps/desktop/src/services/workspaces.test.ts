@@ -4,6 +4,8 @@ import {
   invokeChooseWorkspaceDirectory,
   invokeCreateWorkspaceCollection,
   invokeCreateWorkspace,
+  invokeDeleteWorkspaceCollection,
+  invokeDeleteWorkspaceRequest,
   invokeGetActiveWorkspace,
   invokeListWorkspaces,
   invokeLoadWorkspaceCollections,
@@ -16,6 +18,8 @@ import {
   activateWorkspace,
   createWorkspaceCollection,
   createWorkspace,
+  deleteWorkspaceCollection,
+  deleteWorkspaceRequest,
   getActiveWorkspace,
   listWorkspaces,
   loadWorkspaceCollections,
@@ -41,6 +45,8 @@ vi.mock("../adapters/tauriWorkspaceAdapter", () => {
     invokeChooseWorkspaceDirectory: vi.fn(),
     invokeCreateWorkspaceCollection: vi.fn(),
     invokeCreateWorkspace: vi.fn(),
+    invokeDeleteWorkspaceCollection: vi.fn(),
+    invokeDeleteWorkspaceRequest: vi.fn(),
     invokeGetActiveWorkspace: vi.fn(),
     invokeListWorkspaces: vi.fn(),
     invokeLoadWorkspaceCollections: vi.fn(),
@@ -57,6 +63,10 @@ const createWorkspaceCollectionMock = vi.mocked(
   invokeCreateWorkspaceCollection,
 );
 const createWorkspaceMock = vi.mocked(invokeCreateWorkspace);
+const deleteWorkspaceCollectionMock = vi.mocked(
+  invokeDeleteWorkspaceCollection,
+);
+const deleteWorkspaceRequestMock = vi.mocked(invokeDeleteWorkspaceRequest);
 const getActiveWorkspaceMock = vi.mocked(invokeGetActiveWorkspace);
 const listWorkspacesMock = vi.mocked(invokeListWorkspaces);
 const loadWorkspaceCollectionsMock = vi.mocked(invokeLoadWorkspaceCollections);
@@ -72,6 +82,8 @@ describe("workspace service", () => {
     chooseDirectoryMock.mockReset();
     createWorkspaceCollectionMock.mockReset();
     createWorkspaceMock.mockReset();
+    deleteWorkspaceCollectionMock.mockReset();
+    deleteWorkspaceRequestMock.mockReset();
     getActiveWorkspaceMock.mockReset();
     listWorkspacesMock.mockReset();
     loadWorkspaceCollectionsMock.mockReset();
@@ -263,6 +275,46 @@ describe("workspace service", () => {
     expect(createWorkspaceCollectionMock).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       name: "Empty API",
+    });
+  });
+
+  it("normalizes identifiers before deleting a request", async () => {
+    deleteWorkspaceRequestMock.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "Workspace",
+        path: "/tmp/workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [],
+    });
+
+    await deleteWorkspaceRequest(" workspace-1 ", " request-1 ");
+
+    expect(deleteWorkspaceRequestMock).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      requestId: "request-1",
+    });
+  });
+
+  it("normalizes collection names before deleting them", async () => {
+    deleteWorkspaceCollectionMock.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "Workspace",
+        path: "/tmp/workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [],
+    });
+
+    await deleteWorkspaceCollection(" workspace-1 ", " Public API ");
+
+    expect(deleteWorkspaceCollectionMock).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      name: "Public API",
     });
   });
 });

@@ -63,6 +63,16 @@ export interface CreateWorkspaceCollectionInput {
   name: string;
 }
 
+export interface DeleteWorkspaceRequestInput {
+  workspaceId: string;
+  requestId: string;
+}
+
+export interface DeleteWorkspaceCollectionInput {
+  workspaceId: string;
+  name: string;
+}
+
 export interface WorkspaceCollectionsMutationResult {
   workspace: WorkspaceSummary;
   collections: WorkspaceCollection[];
