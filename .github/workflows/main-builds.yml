@@ -1,4 +1,4 @@
-name: Main builds
+name: Nightly builds
 
 on:
   push:
@@ -93,3 +93,80 @@ jobs:
           args: ${{ matrix.args }}
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: getrest-[platform]-[arch]-[bundle]
+
+  publish:
+    name: Publish rolling nightly release
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: getrest-*
+          path: build-artifacts
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir release-assets
+
+          while IFS= read -r -d '' file; do
+            destination="release-assets/$(basename "$file")"
+
+            if [[ -e "$destination" ]]; then
+              echo "Duplicate release asset: $(basename "$file")" >&2
+              exit 1
+            fi
+
+            cp "$file" "$destination"
+          done < <(
+            find build-artifacts -type f \
+              \( -name '*.AppImage' \
+              -o -name '*.deb' \
+              -o -name '*.dmg' \
+              -o -name '*.exe' \
+              -o -name '*.msi' \
+              -o -name '*.rpm' \) \
+              -print0
+          )
+
+          asset_count=$(find release-assets -maxdepth 1 -type f | wc -l)
+          if [[ "$asset_count" -ne 7 ]]; then
+            echo "Expected 7 installers, found $asset_count." >&2
+            exit 1
+          fi
+
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Replace nightly release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          current_main_sha=$(gh api "repos/$GH_REPO/commits/main" --jq '.sha')
+          if [[ "$current_main_sha" != "$GITHUB_SHA" ]]; then
+            echo "A newer commit is already on main; this build will not replace the nightly release."
+            exit 0
+          fi
+
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release delete nightly --cleanup-tag --yes
+          fi
+
+          if gh api "repos/$GH_REPO/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/$GH_REPO/git/refs/tags/nightly"
+          fi
+
+          gh release create nightly release-assets/* \
+            --latest=false \
+            --notes "Automated development build from commit [$GITHUB_SHA](https://github.com/$GH_REPO/commit/$GITHUB_SHA). These installers are unsigned and intended for testing." \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "GetRest Nightly"
