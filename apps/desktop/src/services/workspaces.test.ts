@@ -233,6 +233,40 @@ describe("workspace service", () => {
     expect(saveWorkspaceRequestMock).not.toHaveBeenCalled();
   });
 
+  it("allows a well-formed environment variable URL template", async () => {
+    saveWorkspaceRequestMock.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "Workspace",
+        path: "/tmp/workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      collections: [],
+      request: {
+        id: "request-1",
+        name: "Todo",
+        method: "GET",
+        path: "{{baseUrl}}/todos/1",
+        body: "",
+      },
+    });
+
+    await saveWorkspaceRequest("workspace-1", "Public API", {
+      id: null,
+      name: "Todo",
+      method: "GET",
+      path: "{{baseUrl}}/todos/1",
+      body: "",
+    });
+
+    expect(saveWorkspaceRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({ path: "{{baseUrl}}/todos/1" }),
+      }),
+    );
+  });
+
   it("normalizes collection names before renaming", async () => {
     renameWorkspaceCollectionMock.mockResolvedValue({
       workspace: {

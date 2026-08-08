@@ -18,7 +18,10 @@ pub fn run() {
             workspace::rename_workspace_collection,
             workspace::create_workspace_collection,
             workspace::delete_workspace_request,
-            workspace::delete_workspace_collection
+            workspace::delete_workspace_collection,
+            workspace::load_workspace_environments,
+            workspace::save_workspace_environment,
+            workspace::delete_workspace_environment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

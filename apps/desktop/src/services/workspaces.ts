@@ -131,19 +131,10 @@ export async function saveWorkspaceRequest(
       "Enter a collection name.",
     );
   }
-  let url: URL;
-  try {
-    url = new URL(normalizedPath);
-  } catch {
+  if (!isHttpUrlOrTemplate(normalizedPath)) {
     throw new WorkspaceServiceError(
       "invalid_request_url",
-      "Enter a valid HTTP or HTTPS URL before saving.",
-    );
-  }
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new WorkspaceServiceError(
-      "invalid_request_url",
-      "Only HTTP and HTTPS request URLs can be saved.",
+      "Enter a valid HTTP or HTTPS URL or variable template before saving.",
     );
   }
 
@@ -158,6 +149,29 @@ export async function saveWorkspaceRequest(
         path: normalizedPath,
       },
     }),
+  );
+}
+
+function isHttpUrlOrTemplate(value: string): boolean {
+  if (!value.includes("{{")) {
+    try {
+      return ["http:", "https:"].includes(new URL(value).protocol);
+    } catch {
+      return false;
+    }
+  }
+  if (!(
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("{{")
+  ))
+    return false;
+  const withoutPlaceholders = value.replace(
+    /{{\s*[A-Za-z_][A-Za-z0-9_.-]*\s*}}/g,
+    "value",
+  );
+  return (
+    !withoutPlaceholders.includes("{{") && !withoutPlaceholders.includes("}}")
   );
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import type {
   HttpMethod,
@@ -6,11 +6,20 @@ import type {
   RestResponse,
 } from "./domain/rest";
 import type {
+  EnvironmentVariable,
+  WorkspaceEnvironment,
+} from "./domain/environment";
+import type {
   WorkspaceCollection,
   WorkspaceGitState,
   WorkspaceSummary,
 } from "./domain/workspace";
 import { sendRestRequest } from "./services/restRequests";
+import {
+  deleteWorkspaceEnvironment,
+  loadWorkspaceEnvironments,
+  saveWorkspaceEnvironment,
+} from "./services/environments";
 import {
   activateWorkspace,
   createWorkspace,
@@ -106,6 +115,43 @@ const methods: HttpMethod[] = [
 ];
 const requestTabs = ["Body", "Params", "Headers", "Auth"] as const;
 const responseTabs = ["Response", "Request", "Headers"] as const;
+
+function HighlightedTemplate({
+  value,
+  variableNames,
+}: {
+  value: string;
+  variableNames: ReadonlySet<string>;
+}) {
+  const placeholderPattern = /{{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*}}/g;
+  const parts: React.ReactNode[] = [];
+  let previousIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = placeholderPattern.exec(value)) !== null) {
+    if (match.index > previousIndex) {
+      parts.push(value.slice(previousIndex, match.index));
+    }
+    const name = match[1];
+    const isDefined = variableNames.has(name);
+    parts.push(
+      <span
+        className={`template-variable ${isDefined ? "defined" : "missing"}`}
+        data-variable-name={name}
+        key={`${match.index}-${name}`}
+        title={
+          isDefined
+            ? `${name} is defined in the active environment`
+            : `${name} is missing from the active environment`
+        }
+      >
+        {match[0]}
+      </span>,
+    );
+    previousIndex = match.index + match[0].length;
+  }
+  parts.push(value.slice(previousIndex));
+  return <>{parts}</>;
+}
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -353,6 +399,21 @@ function App() {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [environments, setEnvironments] = useState<WorkspaceEnvironment[]>([]);
+  const [activeEnvironmentId, setActiveEnvironmentId] = useState("");
+  const [environmentDialogOpen, setEnvironmentDialogOpen] = useState(false);
+  const [environmentDraftId, setEnvironmentDraftId] = useState<string | null>(
+    null,
+  );
+  const [environmentName, setEnvironmentName] = useState("");
+  const [environmentVariables, setEnvironmentVariables] = useState<
+    EnvironmentVariable[]
+  >([]);
+  const [environmentError, setEnvironmentError] = useState<string | null>(null);
+  const [isSavingEnvironment, setIsSavingEnvironment] = useState(false);
+  const [isDeletingEnvironment, setIsDeletingEnvironment] = useState(false);
+  const [environmentDeletePending, setEnvironmentDeletePending] =
+    useState(false);
   const selected = selectedId
     ? (requests.find((request) => request.id === selectedId) ??
       requests[0] ??
@@ -361,6 +422,18 @@ function App() {
   const [methodDraft, setMethodDraft] = useState<HttpMethod>(selected.method);
   const [urlDraft, setUrlDraft] = useState(selected.path);
   const [bodyDraft, setBodyDraft] = useState(selected.body);
+  const urlHighlightRef = useRef<HTMLDivElement>(null);
+  const bodyHighlightRef = useRef<HTMLPreElement>(null);
+  const activeEnvironment = environments.find(
+    (environment) => environment.id === activeEnvironmentId,
+  );
+  const activeVariableNames = useMemo(
+    () =>
+      new Set(
+        activeEnvironment?.variables.map((variable) => variable.name) ?? [],
+      ),
+    [activeEnvironment],
+  );
 
   useEffect(() => {
     let active = true;
@@ -370,10 +443,14 @@ function App() {
         setWorkspace(storedWorkspace);
         setWorkspaceName(storedWorkspace?.name ?? "");
         if (storedWorkspace) {
-          const storedCollections = await loadWorkspaceCollections(
-            storedWorkspace.id,
-          );
-          if (active) applyCollections(storedCollections);
+          const [storedCollections, storedEnvironments] = await Promise.all([
+            loadWorkspaceCollections(storedWorkspace.id),
+            loadWorkspaceEnvironments(storedWorkspace.id),
+          ]);
+          if (active) {
+            applyCollections(storedCollections);
+            applyEnvironments(storedEnvironments);
+          }
         }
       })
       .catch(() => {
@@ -430,6 +507,7 @@ function App() {
         bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft)
           ? bodyDraft.trim()
           : null,
+      variables: activeEnvironment?.variables ?? [],
       sentAt: new Date().toISOString(),
     });
 
@@ -438,6 +516,7 @@ function App() {
         method: methodDraft,
         url: urlDraft,
         body: bodyDraft,
+        variables: activeEnvironment?.variables ?? [],
       });
       setResponse(result);
       setResponseTab("Response");
@@ -480,6 +559,19 @@ function App() {
   ) => {
     setCollectionNames(collections.map((collection) => collection.name));
     applyRequests(requestsFromCollections(collections), preferredId);
+  };
+
+  const applyEnvironments = (
+    nextEnvironments: WorkspaceEnvironment[],
+    preferredId?: string,
+  ) => {
+    setEnvironments(nextEnvironments);
+    setActiveEnvironmentId((current) => {
+      if (preferredId && nextEnvironments.some(({ id }) => id === preferredId))
+        return preferredId;
+      if (nextEnvironments.some(({ id }) => id === current)) return current;
+      return nextEnvironments[0]?.id ?? "";
+    });
   };
 
   const openWorkspaceDialog = async () => {
@@ -561,6 +653,7 @@ function App() {
         setCollectionNames([]);
         applyRequests([]);
       }
+      applyEnvironments([]);
       setWorkspaceDialogOpen(false);
     } catch (error) {
       if (
@@ -606,10 +699,14 @@ function App() {
     setWorkspaceError(null);
     try {
       const activated = await activateWorkspace(id);
-      const collections = await loadWorkspaceCollections(id);
+      const [collections, storedEnvironments] = await Promise.all([
+        loadWorkspaceCollections(id),
+        loadWorkspaceEnvironments(id),
+      ]);
       setWorkspace(activated);
       setWorkspaceName(activated.name);
       applyCollections(collections);
+      applyEnvironments(storedEnvironments);
       setWorkspaceDialogOpen(false);
     } catch (error) {
       setWorkspaceError(
@@ -787,6 +884,90 @@ function App() {
     }
   };
 
+  const loadEnvironmentDraft = (environment?: WorkspaceEnvironment) => {
+    setEnvironmentDraftId(environment?.id ?? null);
+    setEnvironmentName(environment?.name ?? "");
+    setEnvironmentVariables(
+      environment?.variables.map((variable) => ({ ...variable })) ?? [
+        { name: "", value: "" },
+      ],
+    );
+    setEnvironmentError(null);
+    setEnvironmentDeletePending(false);
+  };
+
+  const openEnvironmentDialog = () => {
+    if (!workspace) return;
+    loadEnvironmentDraft(activeEnvironment ?? environments[0]);
+    setEnvironmentDialogOpen(true);
+  };
+
+  const updateEnvironmentVariable = (
+    index: number,
+    field: keyof EnvironmentVariable,
+    value: string,
+  ) => {
+    setEnvironmentVariables((current) =>
+      current.map((variable, variableIndex) =>
+        variableIndex === index ? { ...variable, [field]: value } : variable,
+      ),
+    );
+    setEnvironmentError(null);
+    setEnvironmentDeletePending(false);
+  };
+
+  const submitEnvironment = async () => {
+    if (!workspace || isSavingEnvironment) return;
+    setIsSavingEnvironment(true);
+    setEnvironmentError(null);
+    try {
+      const result = await saveWorkspaceEnvironment(workspace.id, {
+        id: environmentDraftId,
+        name: environmentName,
+        variables: environmentVariables,
+      });
+      setWorkspace(result.workspace);
+      applyEnvironments(result.environments, result.environment.id);
+      loadEnvironmentDraft(result.environment);
+    } catch (error) {
+      setEnvironmentError(
+        error instanceof Error
+          ? error.message
+          : "The environment could not be saved.",
+      );
+    } finally {
+      setIsSavingEnvironment(false);
+    }
+  };
+
+  const submitDeleteEnvironment = async () => {
+    if (!workspace || !environmentDraftId || isDeletingEnvironment) return;
+    if (!environmentDeletePending) {
+      setEnvironmentDeletePending(true);
+      setEnvironmentError(null);
+      return;
+    }
+    setIsDeletingEnvironment(true);
+    setEnvironmentError(null);
+    try {
+      const result = await deleteWorkspaceEnvironment(
+        workspace.id,
+        environmentDraftId,
+      );
+      setWorkspace(result.workspace);
+      applyEnvironments(result.environments);
+      loadEnvironmentDraft(result.environments[0]);
+    } catch (error) {
+      setEnvironmentError(
+        error instanceof Error
+          ? error.message
+          : "The environment could not be deleted.",
+      );
+    } finally {
+      setIsDeletingEnvironment(false);
+    }
+  };
+
   const bodyLines = (bodyDraft || "No body for this request.").split("\n");
   const responseText = response ? formatResponseBody(response) : "";
   const requestHeaderCount =
@@ -802,14 +983,35 @@ function App() {
               <span key={index}>{index + 1}</span>
             ))}
           </div>
-          <textarea
-            aria-label="Request body"
-            className="code-input"
-            onChange={(event) => setBodyDraft(event.target.value)}
-            placeholder="Request body"
-            spellCheck={false}
-            value={bodyDraft}
-          />
+          <div className="template-editor">
+            <pre
+              aria-hidden="true"
+              className="template-highlight body-template-highlight"
+              ref={bodyHighlightRef}
+            >
+              <HighlightedTemplate
+                value={bodyDraft}
+                variableNames={activeVariableNames}
+              />
+              {bodyDraft.endsWith("\n") ? "\n" : null}
+            </pre>
+            <textarea
+              aria-label="Request body"
+              className="code-input template-text-input"
+              onChange={(event) => setBodyDraft(event.target.value)}
+              onScroll={(event) => {
+                if (bodyHighlightRef.current) {
+                  bodyHighlightRef.current.scrollLeft =
+                    event.currentTarget.scrollLeft;
+                  bodyHighlightRef.current.scrollTop =
+                    event.currentTarget.scrollTop;
+                }
+              }}
+              placeholder="Request body"
+              spellCheck={false}
+              value={bodyDraft}
+            />
+          </div>
         </div>
       );
     const emptyStates = {
@@ -851,17 +1053,46 @@ function App() {
           </div>
           <span className="brand-name">GetRest</span>
           <span className="app-stage">preview</span>
+          <span aria-label="Application version" className="app-version">
+            v{__APP_VERSION__}
+          </span>
         </div>
-        <button
-          className="workspace-switcher"
-          onClick={openWorkspaceDialog}
-          title={workspace?.path}
-          type="button"
-        >
-          <span className="workspace-dot" />
-          <span>{workspace?.name ?? "Create workspace"}</span>
-          <Icon name="chevron-down" size={15} />
-        </button>
+        <div className="topbar-context">
+          <button
+            className="workspace-switcher"
+            onClick={openWorkspaceDialog}
+            title={workspace?.path}
+            type="button"
+          >
+            <span className="workspace-dot" />
+            <span>{workspace?.name ?? "Create workspace"}</span>
+            <Icon name="chevron-down" size={15} />
+          </button>
+          <span className="context-divider" />
+          <select
+            aria-label="Active environment"
+            className="environment-selector"
+            disabled={!workspace || environments.length === 0}
+            onChange={(event) => setActiveEnvironmentId(event.target.value)}
+            value={activeEnvironmentId}
+          >
+            <option value="">No environment</option>
+            {environments.map((environment) => (
+              <option key={environment.id} value={environment.id}>
+                {environment.name}
+              </option>
+            ))}
+          </select>
+          <button
+            aria-label="Manage environments"
+            className="icon-button environment-manage-button"
+            disabled={!workspace}
+            onClick={openEnvironmentDialog}
+            type="button"
+          >
+            <Icon name="gear" size={16} />
+          </button>
+        </div>
         <div className="topbar-actions">
           <button
             aria-label="Toggle sidebar"
@@ -1140,13 +1371,31 @@ function App() {
               <option key={method}>{method}</option>
             ))}
           </select>
-          <input
-            aria-label="Request URL"
-            className="url-input"
-            onChange={(event) => setUrlDraft(event.target.value)}
-            spellCheck={false}
-            value={urlDraft}
-          />
+          <div className="url-template-shell">
+            <div
+              aria-hidden="true"
+              className="template-highlight url-template-highlight"
+              ref={urlHighlightRef}
+            >
+              <HighlightedTemplate
+                value={urlDraft}
+                variableNames={activeVariableNames}
+              />
+            </div>
+            <input
+              aria-label="Request URL"
+              className="url-input template-text-input"
+              onChange={(event) => setUrlDraft(event.target.value)}
+              onScroll={(event) => {
+                if (urlHighlightRef.current) {
+                  urlHighlightRef.current.scrollLeft =
+                    event.currentTarget.scrollLeft;
+                }
+              }}
+              spellCheck={false}
+              value={urlDraft}
+            />
+          </div>
           <button
             className="send-button"
             disabled={isSending || !urlDraft.trim()}
@@ -1343,6 +1592,199 @@ function App() {
           </span>
         </footer>
       </section>
+      {environmentDialogOpen && (
+        <div className="modal-backdrop">
+          <section
+            aria-labelledby="environment-dialog-title"
+            aria-modal="true"
+            className="workspace-dialog environment-dialog"
+            role="dialog"
+          >
+            <header className="workspace-dialog-header">
+              <div>
+                <span className="eyebrow">Workspace variables</span>
+                <h2 id="environment-dialog-title">Environments</h2>
+              </div>
+              <button
+                aria-label="Close environment dialog"
+                className="icon-button workspace-close-button"
+                disabled={isSavingEnvironment || isDeletingEnvironment}
+                onClick={() => setEnvironmentDialogOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <div className="workspace-dialog-content environment-content">
+              <div className="environment-toolbar">
+                <label className="workspace-field">
+                  <span>Environment to edit</span>
+                  <select
+                    aria-label="Environment to edit"
+                    disabled={environments.length === 0}
+                    onChange={(event) =>
+                      loadEnvironmentDraft(
+                        environments.find(
+                          (environment) =>
+                            environment.id === event.target.value,
+                        ),
+                      )
+                    }
+                    value={environmentDraftId ?? ""}
+                  >
+                    {environmentDraftId === null && (
+                      <option value="">New environment</option>
+                    )}
+                    {environments.map((environment) => (
+                      <option key={environment.id} value={environment.id}>
+                        {environment.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="secondary-button"
+                  onClick={() => loadEnvironmentDraft()}
+                  type="button"
+                >
+                  <Icon name="plus" size={15} /> New environment
+                </button>
+              </div>
+              <label className="workspace-field">
+                <span>Environment name</span>
+                <input
+                  aria-label="Environment name"
+                  autoFocus
+                  maxLength={100}
+                  onChange={(event) => {
+                    setEnvironmentName(event.target.value);
+                    setEnvironmentError(null);
+                    setEnvironmentDeletePending(false);
+                  }}
+                  placeholder="Development"
+                  value={environmentName}
+                />
+              </label>
+              <div className="environment-variables">
+                <div className="environment-variables-heading">
+                  <span>Variable</span>
+                  <span>Value</span>
+                  <span />
+                </div>
+                {environmentVariables.map((variable, index) => (
+                  <div className="environment-variable-row" key={index}>
+                    <input
+                      aria-label={`Variable name ${index + 1}`}
+                      maxLength={100}
+                      onChange={(event) =>
+                        updateEnvironmentVariable(
+                          index,
+                          "name",
+                          event.target.value,
+                        )
+                      }
+                      placeholder="baseUrl"
+                      value={variable.name}
+                    />
+                    <input
+                      aria-label={`Variable value ${index + 1}`}
+                      onChange={(event) =>
+                        updateEnvironmentVariable(
+                          index,
+                          "value",
+                          event.target.value,
+                        )
+                      }
+                      placeholder="https://api.example.com"
+                      value={variable.value}
+                    />
+                    <button
+                      aria-label={`Remove variable ${index + 1}`}
+                      className="icon-button"
+                      disabled={environmentVariables.length === 1}
+                      onClick={() =>
+                        setEnvironmentVariables((current) =>
+                          current.filter(
+                            (_, variableIndex) => variableIndex !== index,
+                          ),
+                        )
+                      }
+                      type="button"
+                    >
+                      <Icon name="trash" size={15} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  className="plain-button add-variable-button"
+                  disabled={environmentVariables.length >= 200}
+                  onClick={() =>
+                    setEnvironmentVariables((current) => [
+                      ...current,
+                      { name: "", value: "" },
+                    ])
+                  }
+                  type="button"
+                >
+                  <Icon name="plus" size={14} /> Add variable
+                </button>
+              </div>
+              <div className="environment-security-note">
+                Use variables as <code>{"{{baseUrl}}"}</code> in request URLs or
+                bodies. These values are stored in workspace Git; do not add
+                passwords, tokens, API keys, or other secrets.
+              </div>
+              {environmentDeletePending && (
+                <div className="delete-warning">
+                  Select “Confirm delete” to remove this environment file. The
+                  change remains recoverable through Git until it is committed.
+                </div>
+              )}
+              {environmentError && (
+                <div aria-live="polite" className="workspace-error">
+                  {environmentError}
+                </div>
+              )}
+            </div>
+            <footer className="workspace-dialog-actions">
+              {environmentDraftId && (
+                <button
+                  className="plain-button environment-delete-button"
+                  disabled={isSavingEnvironment || isDeletingEnvironment}
+                  onClick={submitDeleteEnvironment}
+                  type="button"
+                >
+                  {isDeletingEnvironment
+                    ? "Deleting…"
+                    : environmentDeletePending
+                      ? "Confirm delete"
+                      : "Delete environment"}
+                </button>
+              )}
+              <button
+                className="plain-button"
+                disabled={isSavingEnvironment || isDeletingEnvironment}
+                onClick={() => setEnvironmentDialogOpen(false)}
+                type="button"
+              >
+                Close
+              </button>
+              <button
+                className="send-button workspace-create-button"
+                disabled={
+                  isSavingEnvironment ||
+                  isDeletingEnvironment ||
+                  !environmentName.trim()
+                }
+                onClick={submitEnvironment}
+                type="button"
+              >
+                {isSavingEnvironment ? "Saving…" : "Save environment"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
       {deleteTarget && (
         <div className="modal-backdrop">
           <section

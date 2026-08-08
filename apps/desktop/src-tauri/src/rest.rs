@@ -3,6 +3,7 @@ use reqwest::{
     Method, Url,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
@@ -16,6 +17,14 @@ pub struct RestRequest {
     url: String,
     headers: Vec<RestHeader>,
     body: Option<String>,
+    #[serde(default)]
+    variables: Vec<RestVariable>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RestVariable {
+    name: String,
+    value: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -141,9 +150,24 @@ fn validate_request(request: RestRequest) -> Result<ValidatedRequest, CommandErr
         ));
     }
 
+    let variables = validate_variables(request.variables)?;
+    let resolved_url = resolve_template(&request.url, &variables)?;
+    let resolved_body = request
+        .body
+        .map(|body| resolve_template(&body, &variables))
+        .transpose()?;
+    if resolved_body
+        .as_ref()
+        .is_some_and(|body| body.len() > MAX_REQUEST_BODY_BYTES)
+    {
+        return Err(CommandError::invalid_request(
+            "The resolved request body exceeds the 10 MiB limit.",
+        ));
+    }
+
     let method = Method::from_bytes(request.method.as_bytes())
         .map_err(|_| CommandError::invalid_request("The HTTP method is not valid."))?;
-    let url = Url::parse(&request.url)
+    let url = Url::parse(&resolved_url)
         .map_err(|_| CommandError::invalid_request("The request URL is not valid."))?;
 
     if !matches!(url.scheme(), "http" | "https") {
@@ -165,8 +189,77 @@ fn validate_request(request: RestRequest) -> Result<ValidatedRequest, CommandErr
         method,
         url,
         headers,
-        body: request.body,
+        body: resolved_body,
     })
+}
+
+fn validate_variables(
+    variables: Vec<RestVariable>,
+) -> Result<HashMap<String, String>, CommandError> {
+    if variables.len() > 200 {
+        return Err(CommandError::invalid_request(
+            "The active environment contains too many variables.",
+        ));
+    }
+    let mut values = HashMap::new();
+    let mut names = HashSet::new();
+    for variable in variables {
+        if !valid_variable_name(&variable.name)
+            || variable.value.len() > 64 * 1024
+            || variable.value.contains('\0')
+            || !names.insert(variable.name.clone())
+        {
+            return Err(CommandError::invalid_request(
+                "The active environment contains an invalid or duplicate variable.",
+            ));
+        }
+        values.insert(variable.name, variable.value);
+    }
+    Ok(values)
+}
+
+fn valid_variable_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 100 {
+        return false;
+    }
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-')
+        })
+}
+
+fn resolve_template(
+    template: &str,
+    variables: &HashMap<String, String>,
+) -> Result<String, CommandError> {
+    let mut resolved = String::with_capacity(template.len());
+    let mut remainder = template;
+    while let Some(start) = remainder.find("{{") {
+        resolved.push_str(&remainder[..start]);
+        let placeholder = &remainder[start + 2..];
+        let end = placeholder.find("}}").ok_or_else(|| {
+            CommandError::invalid_request("A variable placeholder is not closed with }}.")
+        })?;
+        let name = placeholder[..end].trim();
+        if !valid_variable_name(name) {
+            return Err(CommandError::invalid_request(
+                "A variable placeholder contains an invalid name.",
+            ));
+        }
+        let value = variables.get(name).ok_or_else(|| {
+            CommandError::invalid_request(format!(
+                "Define a value for {{{{{name}}}}} in the active environment."
+            ))
+        })?;
+        resolved.push_str(value);
+        remainder = &placeholder[end + 2..];
+    }
+    resolved.push_str(remainder);
+    Ok(resolved)
 }
 
 fn map_request_error(error: reqwest::Error) -> CommandError {
@@ -195,6 +288,7 @@ mod tests {
             url: url.to_owned(),
             headers: vec![],
             body: None,
+            variables: vec![],
         }
     }
 
@@ -234,6 +328,46 @@ mod tests {
         input.body = Some("a".repeat(MAX_REQUEST_BODY_BYTES + 1));
 
         assert!(validate_request(input).is_err());
+    }
+
+    #[test]
+    fn resolves_environment_variables_in_urls_and_bodies() {
+        let mut input = request("{{ baseUrl }}/todos/{{todoId}}");
+        input.method = "POST".to_owned();
+        input.body = Some(r#"{"id":"{{todoId}}","literal":"{ok}"}"#.to_owned());
+        input.variables = vec![
+            RestVariable {
+                name: "baseUrl".to_owned(),
+                value: "https://example.com".to_owned(),
+            },
+            RestVariable {
+                name: "todoId".to_owned(),
+                value: "42".to_owned(),
+            },
+        ];
+
+        let resolved = validate_request(input).expect("variables should resolve");
+
+        assert_eq!(resolved.url.as_str(), "https://example.com/todos/42");
+        assert_eq!(
+            resolved.body.as_deref(),
+            Some(r#"{"id":"42","literal":"{ok}"}"#)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_and_malformed_environment_variables() {
+        let Err(missing) = validate_request(request("{{baseUrl}}/todos")) else {
+            panic!("missing variable should be rejected");
+        };
+        assert_eq!(missing.code, "invalid_request");
+        assert!(missing.message.contains("baseUrl"));
+
+        let Err(malformed) = validate_request(request("{{baseUrl/todos")) else {
+            panic!("malformed placeholder should be rejected");
+        };
+        assert_eq!(malformed.code, "invalid_request");
+        assert!(malformed.message.contains("not closed"));
     }
 
     #[test]
