@@ -13,7 +13,9 @@ interface is built with React and TypeScript.
 > interactive prototype with an initial native REST request flow, dedicated
 > local Git workspaces, and versioned collection migration during workspace
 > creation. Requests and collections support explicit create, update, and delete
-> operations in workspace repositories. Automatic
+> operations in workspace repositories. Workspaces can also define selectable,
+> non-secret environments whose variables are resolved in request URLs and
+> bodies by the native engine. Automatic
 > persistence while editing, remote synchronization, advanced request options,
 > and the remaining protocols are still under development.
 
@@ -38,7 +40,9 @@ interface is built with React and TypeScript.
 - Build and execute HTTP requests with parameters, headers, bodies,
   authentication, certificates, and proxy settings.
 - Work with REST, GraphQL, WebSocket, Server-Sent Events, and gRPC APIs.
-- Manage local environments and reusable variables.
+- Manage local environments and reusable variables. Initial support includes
+  non-secret workspace variables using `{{variableName}}` templates in request
+  URLs and bodies.
 - Inspect response status, timing, headers, cookies, and formatted bodies.
 - Keep local request history and reusable examples.
 - Import and export common API description and request formats.

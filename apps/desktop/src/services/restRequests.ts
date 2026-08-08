@@ -1,10 +1,16 @@
 import { invokeRestRequest } from "../adapters/tauriRestAdapter";
-import type { HttpMethod, RestRequest, RestResponse } from "../domain/rest";
+import type {
+  HttpMethod,
+  RestRequest,
+  RestResponse,
+  RestVariable,
+} from "../domain/rest";
 
 export interface SendRestRequestInput {
   method: HttpMethod;
   url: string;
   body: string;
+  variables?: RestVariable[];
 }
 
 export async function sendRestRequest(
@@ -16,22 +22,27 @@ export async function sendRestRequest(
 
   const request: RestRequest = {
     method: input.method,
-    url: url.toString(),
+    url,
     headers:
       canHaveBody && body
         ? [{ name: "content-type", value: "application/json" }]
         : [],
     body: canHaveBody && body ? body : null,
+    variables: input.variables ?? [],
   };
 
   return invokeRestRequest(request);
 }
 
-function validateUrl(value: string): URL {
+function validateUrl(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error("Enter a valid request URL.");
+  if (normalized.includes("{{")) return normalized;
+
   let url: URL;
 
   try {
-    url = new URL(value.trim());
+    url = new URL(normalized);
   } catch {
     throw new Error("Enter a valid request URL.");
   }
@@ -40,5 +51,5 @@ function validateUrl(value: string): URL {
     throw new Error("Only HTTP and HTTPS request URLs are supported.");
   }
 
-  return url;
+  return url.toString();
 }

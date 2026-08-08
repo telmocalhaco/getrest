@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 const sendRestRequestMock = vi.hoisted(() => vi.fn());
+const environmentMocks = vi.hoisted(() => ({
+  delete: vi.fn(),
+  load: vi.fn(),
+  save: vi.fn(),
+}));
 const workspaceMocks = vi.hoisted(() => {
   class MockWorkspaceServiceError extends Error {
     constructor(
@@ -34,6 +39,11 @@ const workspaceMocks = vi.hoisted(() => {
 vi.mock("./services/restRequests", () => ({
   sendRestRequest: sendRestRequestMock,
 }));
+vi.mock("./services/environments", () => ({
+  deleteWorkspaceEnvironment: environmentMocks.delete,
+  loadWorkspaceEnvironments: environmentMocks.load,
+  saveWorkspaceEnvironment: environmentMocks.save,
+}));
 vi.mock("./services/workspaces", () => ({
   activateWorkspace: workspaceMocks.activate,
   createWorkspaceCollection: workspaceMocks.createCollection,
@@ -53,6 +63,9 @@ vi.mock("./services/workspaces", () => ({
 describe("GetRest desktop shell", () => {
   beforeEach(() => {
     sendRestRequestMock.mockReset();
+    environmentMocks.delete.mockReset();
+    environmentMocks.load.mockReset();
+    environmentMocks.save.mockReset();
     workspaceMocks.activate.mockReset();
     workspaceMocks.createCollection.mockReset();
     workspaceMocks.create.mockReset();
@@ -68,6 +81,7 @@ describe("GetRest desktop shell", () => {
     workspaceMocks.getActive.mockResolvedValue(null);
     workspaceMocks.list.mockResolvedValue([]);
     workspaceMocks.loadCollections.mockResolvedValue([]);
+    environmentMocks.load.mockResolvedValue([]);
     workspaceMocks.selectDirectory.mockResolvedValue(
       "/tmp/getrest-demo-workspace",
     );
@@ -175,6 +189,27 @@ describe("GetRest desktop shell", () => {
       },
       collections: [],
     });
+    environmentMocks.save.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        name: "getrest-demo-workspace",
+        path: "/tmp/getrest-demo-workspace",
+        gitState: "changes",
+        hasRemote: false,
+      },
+      environments: [
+        {
+          id: "environment-1",
+          name: "Local",
+          variables: [{ name: "baseUrl", value: "http://localhost:3000" }],
+        },
+      ],
+      environment: {
+        id: "environment-1",
+        name: "Local",
+        variables: [{ name: "baseUrl", value: "http://localhost:3000" }],
+      },
+    });
     sendRestRequestMock.mockResolvedValue({
       status: 200,
       statusText: "OK",
@@ -196,6 +231,9 @@ describe("GetRest desktop shell", () => {
   it("renders the initial request workspace", () => {
     render(<App />);
     expect(screen.getByText("GetRest")).toBeInTheDocument();
+    expect(screen.getByLabelText("Application version")).toHaveTextContent(
+      "v0.1.0",
+    );
     expect(
       screen.getByRole("heading", { name: "Todo details" }),
     ).toBeInTheDocument();
@@ -218,6 +256,7 @@ describe("GetRest desktop shell", () => {
       method: "GET",
       url: "https://jsonplaceholder.typicode.com/todos/1",
       body: "",
+      variables: [],
     });
     expect(await screen.findByText("200 OK")).toBeInTheDocument();
     expect(screen.getByLabelText("Response body")).toHaveTextContent(
@@ -251,6 +290,105 @@ describe("GetRest desktop shell", () => {
     expect(screen.getByLabelText("HTTP method")).toHaveValue("GET");
     expect(screen.getByLabelText("Request URL")).toHaveValue(
       "https://jsonplaceholder.typicode.com/posts?_limit=5",
+    );
+  });
+
+  it("sends the active environment variables with a templated request", async () => {
+    workspaceMocks.getActive.mockResolvedValue({
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "clean",
+      hasRemote: false,
+    });
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "POST",
+            path: "{{baseUrl}}/todos",
+            body: '{"user":"{{userId}}"}',
+          },
+        ],
+      },
+    ]);
+    environmentMocks.load.mockResolvedValue([
+      {
+        id: "environment-1",
+        name: "Development",
+        variables: [
+          { name: "baseUrl", value: "https://dev.example.com" },
+          { name: "userId", value: "42" },
+        ],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Todo details" });
+    expect(screen.getByLabelText("Active environment")).toHaveValue(
+      "environment-1",
+    );
+    expect(screen.getByText("{{baseUrl}}")).toHaveClass(
+      "template-variable",
+      "defined",
+    );
+    expect(screen.getByText("{{userId}}")).toHaveClass(
+      "template-variable",
+      "defined",
+    );
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(sendRestRequestMock).toHaveBeenCalledWith({
+      method: "POST",
+      url: "{{baseUrl}}/todos",
+      body: '{"user":"{{userId}}"}',
+      variables: [
+        { name: "baseUrl", value: "https://dev.example.com" },
+        { name: "userId", value: "42" },
+      ],
+    });
+  });
+
+  it("creates a workspace environment from the management dialog", async () => {
+    workspaceMocks.getActive.mockResolvedValue({
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "clean",
+      hasRemote: false,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Demo workspace" });
+    await user.click(
+      screen.getByRole("button", { name: "Manage environments" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Environments" });
+    await user.type(within(dialog).getByLabelText("Environment name"), "Local");
+    await user.type(
+      within(dialog).getByLabelText("Variable name 1"),
+      "baseUrl",
+    );
+    await user.type(
+      within(dialog).getByLabelText("Variable value 1"),
+      "http://localhost:3000",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save environment" }),
+    );
+
+    expect(environmentMocks.save).toHaveBeenCalledWith("workspace-1", {
+      id: null,
+      name: "Local",
+      variables: [{ name: "baseUrl", value: "http://localhost:3000" }],
+    });
+    expect(await screen.findByLabelText("Active environment")).toHaveValue(
+      "environment-1",
     );
   });
 

@@ -11,6 +11,12 @@ export interface RestRequest {
   url: string;
   headers: RestHeader[];
   body: string | null;
+  variables: RestVariable[];
+}
+
+export interface RestVariable {
+  name: string;
+  value: string;
 }
 
 export interface RestResponse {

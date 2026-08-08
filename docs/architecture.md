@@ -183,6 +183,25 @@ Version-controlled workspace data includes:
 - shared environment definitions and non-secret values;
 - references to secret values held outside Git.
 
+Shared environments are stored as validated JSON files in the workspace
+`environments/` directory. Each environment has a stable identifier, a display
+name, and uniquely named non-secret variables. The active environment is a
+local interface choice and does not rewrite saved request templates.
+
+Request URLs and bodies use `{{variableName}}` placeholders. The TypeScript
+layer forwards the selected environment values through the typed request
+contract, and the Rust request engine performs a single-pass substitution
+before HTTP URL validation and request execution. Missing, malformed,
+duplicate, oversized, or invalid variables stop the request with a structured
+error. Variable values are not recursively expanded, preventing cycles and
+ambiguous evaluation order.
+
+Environment JSON files are replaced atomically and remain uncommitted for Git
+review. They contain only values that are safe to share. Passwords, tokens, API
+keys, cookies, and other secrets must never be written there; a later secrets
+integration will store those values in the operating-system credential store
+and keep only stable references in workspace data.
+
 The local SQLite database stores workspace locations, recent usage, history,
 and application state. It does not replace the workspace repository as the
 portable source of truth.

@@ -31,6 +31,14 @@ changes remain uncommitted for review or recovery through Git. The request
 options menu starts a new empty draft or manages the selected request without
 crowding the main request toolbar.
 
+The active workspace can define non-secret environments in versioned JSON
+files. Select an environment in the top bar and use variables such as
+`{{baseUrl}}` in request URLs or JSON bodies. The native Rust engine replaces
+the placeholders immediately before validating and sending the request.
+Resolution is intentionally single-pass. Environment files must never contain
+passwords, tokens, API keys, or other secrets; protected variables will use the
+operating system credential store in a later implementation.
+
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)

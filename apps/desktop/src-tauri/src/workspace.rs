@@ -19,6 +19,7 @@ const WORKSPACE_MANIFEST: &str = "workspace.json";
 const INITIAL_COMMIT_MESSAGE: &str = "chore: initialize GetRest workspace";
 const RENAME_COMMIT_MESSAGE: &str = "chore: rename GetRest workspace";
 const MAX_COLLECTION_FILE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_ENVIRONMENT_FILE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +83,41 @@ pub struct DeleteWorkspaceCollectionInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SaveWorkspaceEnvironmentInput {
+    workspace_id: String,
+    environment: UnsavedWorkspaceEnvironment,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkspaceEnvironmentInput {
+    workspace_id: String,
+    environment_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsavedWorkspaceEnvironment {
+    id: Option<String>,
+    name: String,
+    variables: Vec<WorkspaceEnvironmentVariable>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspaceEnvironmentVariable {
+    name: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspaceEnvironment {
+    id: String,
+    name: String,
+    variables: Vec<WorkspaceEnvironmentVariable>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UnsavedWorkspaceRequest {
     id: Option<String>,
     name: String,
@@ -120,6 +156,21 @@ pub struct SaveWorkspaceRequestResult {
 pub struct WorkspaceCollectionsMutationResult {
     workspace: WorkspaceSummary,
     collections: Vec<WorkspaceCollection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkspaceEnvironmentResult {
+    workspace: WorkspaceSummary,
+    environments: Vec<WorkspaceEnvironment>,
+    environment: WorkspaceEnvironment,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEnvironmentMutationResult {
+    workspace: WorkspaceSummary,
+    environments: Vec<WorkspaceEnvironment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -400,6 +451,63 @@ pub async fn delete_workspace_collection(
         WorkspaceCommandError::new(
             "workspace_collection_delete_failed",
             "The collection delete operation stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn load_workspace_environments(
+    app: AppHandle,
+    workspace_id: String,
+) -> Result<Vec<WorkspaceEnvironment>, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspace = load_workspace_by_id(&app_data_dir, workspace_id.trim())?;
+        let directory = Path::new(&workspace.path);
+        verify_workspace_identity(directory, &workspace.id)?;
+        read_workspace_environments(directory)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_environment_load_failed",
+            "The workspace environments could not be loaded.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn save_workspace_environment(
+    app: AppHandle,
+    input: SaveWorkspaceEnvironmentInput,
+) -> Result<SaveWorkspaceEnvironmentResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        save_environment_to_workspace(&app_data_dir, input)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_environment_save_failed",
+            "The environment save operation stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn delete_workspace_environment(
+    app: AppHandle,
+    input: DeleteWorkspaceEnvironmentInput,
+) -> Result<WorkspaceEnvironmentMutationResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_environment_from_workspace(&app_data_dir, input)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_environment_delete_failed",
+            "The environment delete operation stopped unexpectedly.",
         )
     })?
 }
@@ -711,7 +819,7 @@ fn validate_collections(collections: &[WorkspaceCollection]) -> Result<(), Works
                 || request.path.trim().is_empty()
                 || request.path.len() > 16_384
                 || request.body.len() > MAX_COLLECTION_FILE_BYTES as usize
-                || !is_http_url(&request.path)
+                || !is_http_url_or_template(&request.path)
                 || !matches!(
                     request.method.as_str(),
                     "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
@@ -728,6 +836,31 @@ fn is_http_url(value: &str) -> bool {
     Url::parse(value)
         .map(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
         .unwrap_or(false)
+}
+
+fn is_http_url_or_template(value: &str) -> bool {
+    if !value.contains("{{") {
+        return is_http_url(value);
+    }
+    if !(value.starts_with("http://") || value.starts_with("https://") || value.starts_with("{{")) {
+        return false;
+    }
+
+    let mut remainder = value;
+    while let Some(start) = remainder.find("{{") {
+        if remainder[..start].contains("}}") {
+            return false;
+        }
+        let placeholder = &remainder[start + 2..];
+        let Some(end) = placeholder.find("}}") else {
+            return false;
+        };
+        if !valid_variable_name(placeholder[..end].trim()) {
+            return false;
+        }
+        remainder = &placeholder[end + 2..];
+    }
+    !remainder.contains("}}")
 }
 
 fn valid_text(value: &str, maximum_length: usize) -> bool {
@@ -1065,6 +1198,255 @@ fn collections_mutation_result(
         workspace: updated_workspace,
         collections,
     })
+}
+
+fn save_environment_to_workspace(
+    app_data_dir: &Path,
+    input: SaveWorkspaceEnvironmentInput,
+) -> Result<SaveWorkspaceEnvironmentResult, WorkspaceCommandError> {
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let requested_id = input
+        .environment
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let environment = WorkspaceEnvironment {
+        id: requested_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: input.environment.name.trim().to_owned(),
+        variables: input.environment.variables,
+    };
+    let mut environments = read_workspace_environments(directory)?;
+    if let Some(id) = requested_id {
+        let index = environments
+            .iter()
+            .position(|existing| existing.id == id)
+            .ok_or_else(environment_not_found_error)?;
+        environments[index] = environment.clone();
+    } else {
+        environments.push(environment.clone());
+    }
+    validate_environments(&environments)?;
+    replace_workspace_environments(directory, &environments)?;
+    environments.sort_by_key(|item| item.name.to_lowercase());
+
+    let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
+    remember_workspace(app_data_dir, &updated_workspace)?;
+    Ok(SaveWorkspaceEnvironmentResult {
+        workspace: updated_workspace,
+        environments,
+        environment,
+    })
+}
+
+fn delete_environment_from_workspace(
+    app_data_dir: &Path,
+    input: DeleteWorkspaceEnvironmentInput,
+) -> Result<WorkspaceEnvironmentMutationResult, WorkspaceCommandError> {
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let environment_id = input.environment_id.trim();
+    if !valid_environment_id(environment_id) {
+        return Err(environment_not_found_error());
+    }
+    let mut environments = read_workspace_environments(directory)?;
+    let previous_len = environments.len();
+    environments.retain(|environment| environment.id != environment_id);
+    if environments.len() == previous_len {
+        return Err(environment_not_found_error());
+    }
+    replace_workspace_environments(directory, &environments)?;
+
+    let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
+    remember_workspace(app_data_dir, &updated_workspace)?;
+    Ok(WorkspaceEnvironmentMutationResult {
+        workspace: updated_workspace,
+        environments,
+    })
+}
+
+fn read_workspace_environments(
+    directory: &Path,
+) -> Result<Vec<WorkspaceEnvironment>, WorkspaceCommandError> {
+    let environments_directory = directory.join("environments");
+    let mut paths = validate_environment_directory_entries(&environments_directory)?;
+    paths.sort();
+    let mut environments = Vec::with_capacity(paths.len());
+    for path in paths {
+        let content = fs::read(path).map_err(|_| environment_read_error())?;
+        let environment = serde_json::from_slice::<WorkspaceEnvironment>(&content)
+            .map_err(|_| environment_read_error())?;
+        environments.push(environment);
+    }
+    validate_environments(&environments)?;
+    environments.sort_by_key(|environment| environment.name.to_lowercase());
+    Ok(environments)
+}
+
+fn validate_environment_directory_entries(
+    environments_directory: &Path,
+) -> Result<Vec<PathBuf>, WorkspaceCommandError> {
+    let metadata =
+        fs::symlink_metadata(environments_directory).map_err(|_| environment_read_error())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(environment_read_error());
+    }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(environments_directory).map_err(|_| environment_read_error())? {
+        let entry = entry.map_err(|_| environment_read_error())?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|_| environment_read_error())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(environment_read_error());
+        }
+        if path.file_name().is_some_and(|name| name == ".gitkeep") {
+            continue;
+        }
+        if !path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+            || metadata.len() > MAX_ENVIRONMENT_FILE_BYTES
+        {
+            return Err(environment_read_error());
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+fn validate_environments(
+    environments: &[WorkspaceEnvironment],
+) -> Result<(), WorkspaceCommandError> {
+    if environments.len() > 100 {
+        return Err(invalid_environments_error());
+    }
+    let mut ids = HashSet::new();
+    let mut names = HashSet::new();
+    for environment in environments {
+        if !valid_environment_id(&environment.id)
+            || !valid_text(&environment.name, 100)
+            || !ids.insert(environment.id.clone())
+            || !names.insert(environment.name.to_lowercase())
+            || environment.variables.len() > 200
+        {
+            return Err(invalid_environments_error());
+        }
+        let mut variable_names = HashSet::new();
+        for variable in &environment.variables {
+            if !valid_variable_name(&variable.name)
+                || variable.value.len() > 64 * 1024
+                || variable.value.contains('\0')
+                || !variable_names.insert(variable.name.clone())
+            {
+                return Err(invalid_environments_error());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn valid_environment_id(id: &str) -> bool {
+    Uuid::parse_str(id).is_ok()
+}
+
+fn valid_variable_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 100 {
+        return false;
+    }
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-')
+        })
+}
+
+fn replace_workspace_environments(
+    directory: &Path,
+    environments: &[WorkspaceEnvironment],
+) -> Result<(), WorkspaceCommandError> {
+    let environments_directory = directory.join("environments");
+    validate_environment_directory_entries(&environments_directory)?;
+
+    let operation_id = Uuid::new_v4().to_string();
+    let staging = directory.join(format!(".getrest-environments-{operation_id}"));
+    let backup = directory.join(format!(".getrest-environments-backup-{operation_id}"));
+    fs::create_dir(&staging).map_err(|_| environment_write_error())?;
+    if let Err(error) = write_environment_files(&staging, environments) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if fs::rename(&environments_directory, &backup).is_err() {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(environment_write_error());
+    }
+    if fs::rename(&staging, &environments_directory).is_err() {
+        let _ = fs::rename(&backup, &environments_directory);
+        let _ = fs::remove_dir_all(&staging);
+        return Err(environment_write_error());
+    }
+    fs::remove_dir_all(&backup).map_err(|_| environment_write_error())
+}
+
+fn write_environment_files(
+    environments_directory: &Path,
+    environments: &[WorkspaceEnvironment],
+) -> Result<(), WorkspaceCommandError> {
+    if environments.is_empty() {
+        fs::write(environments_directory.join(".gitkeep"), b"")
+            .map_err(|_| environment_write_error())?;
+        return Ok(());
+    }
+    for environment in environments {
+        let content =
+            serde_json::to_vec_pretty(environment).map_err(|_| environment_write_error())?;
+        if content.len() > MAX_ENVIRONMENT_FILE_BYTES as usize {
+            return Err(invalid_environments_error());
+        }
+        fs::write(
+            environments_directory.join(format!("{}.json", environment.id)),
+            content,
+        )
+        .map_err(|_| environment_write_error())?;
+    }
+    Ok(())
+}
+
+fn environment_not_found_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "environment_not_found",
+        "The selected environment no longer exists.",
+    )
+}
+
+fn invalid_environments_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "invalid_workspace_environments",
+        "The workspace environments contain invalid, duplicate, or oversized values.",
+    )
+}
+
+fn environment_read_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "workspace_environments_invalid",
+        "One or more environment files are invalid or too large.",
+    )
+}
+
+fn environment_write_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "workspace_environment_write_failed",
+        "The workspace environment files could not be updated.",
+    )
 }
 
 fn verify_workspace_identity(
@@ -1593,6 +1975,24 @@ mod tests {
     }
 
     #[test]
+    fn accepts_well_formed_variable_templates_in_saved_request_urls() {
+        let collections = vec![WorkspaceCollection {
+            name: "Public API".to_owned(),
+            requests: vec![WorkspaceRequest {
+                id: "todo".to_owned(),
+                name: "Todo".to_owned(),
+                method: "GET".to_owned(),
+                path: "{{baseUrl}}/todos/{{todoId}}".to_owned(),
+                body: String::new(),
+            }],
+        }];
+
+        assert!(validate_collections(&collections).is_ok());
+        assert!(!is_http_url_or_template("{{baseUrl/todos"));
+        assert!(!is_http_url_or_template("file://{{path}}"));
+    }
+
+    #[test]
     fn renames_a_workspace_in_the_manifest_registry_and_git_history() {
         let directory = tempdir().expect("workspace directory");
         let app_data = tempdir().expect("application data directory");
@@ -1917,5 +2317,113 @@ mod tests {
         assert!(read_workspace_collections(directory.path())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn creates_updates_and_deletes_a_workspace_environment() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: Vec::new(),
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+
+        let saved = save_environment_to_workspace(
+            app_data.path(),
+            SaveWorkspaceEnvironmentInput {
+                workspace_id: created.id.clone(),
+                environment: UnsavedWorkspaceEnvironment {
+                    id: None,
+                    name: "Development".to_owned(),
+                    variables: vec![WorkspaceEnvironmentVariable {
+                        name: "baseUrl".to_owned(),
+                        value: "https://dev.example.com".to_owned(),
+                    }],
+                },
+            },
+        )
+        .expect("environment should be saved");
+
+        assert_eq!(saved.environments.len(), 1);
+        assert!(matches!(
+            saved.workspace.git_state,
+            WorkspaceGitState::Changes
+        ));
+        assert!(directory
+            .path()
+            .join(format!("environments/{}.json", saved.environment.id))
+            .is_file());
+
+        let updated = save_environment_to_workspace(
+            app_data.path(),
+            SaveWorkspaceEnvironmentInput {
+                workspace_id: created.id.clone(),
+                environment: UnsavedWorkspaceEnvironment {
+                    id: Some(saved.environment.id.clone()),
+                    name: "Local".to_owned(),
+                    variables: vec![WorkspaceEnvironmentVariable {
+                        name: "baseUrl".to_owned(),
+                        value: "http://localhost:3000".to_owned(),
+                    }],
+                },
+            },
+        )
+        .expect("environment should be updated");
+
+        assert_eq!(updated.environments.len(), 1);
+        assert_eq!(updated.environment.name, "Local");
+        assert_eq!(
+            read_workspace_environments(directory.path()).unwrap()[0].variables[0].value,
+            "http://localhost:3000"
+        );
+
+        let deleted = delete_environment_from_workspace(
+            app_data.path(),
+            DeleteWorkspaceEnvironmentInput {
+                workspace_id: created.id,
+                environment_id: saved.environment.id,
+            },
+        )
+        .expect("environment should be deleted");
+
+        assert!(deleted.environments.is_empty());
+        assert!(directory.path().join("environments/.gitkeep").is_file());
+    }
+
+    #[test]
+    fn rejects_duplicate_environment_names_and_variables() {
+        let environment_id = Uuid::new_v4().to_string();
+        let duplicate_variables = vec![WorkspaceEnvironment {
+            id: environment_id,
+            name: "Development".to_owned(),
+            variables: vec![
+                WorkspaceEnvironmentVariable {
+                    name: "baseUrl".to_owned(),
+                    value: "https://one.example.com".to_owned(),
+                },
+                WorkspaceEnvironmentVariable {
+                    name: "baseUrl".to_owned(),
+                    value: "https://two.example.com".to_owned(),
+                },
+            ],
+        }];
+        assert!(validate_environments(&duplicate_variables).is_err());
+
+        let duplicate_names = vec![
+            WorkspaceEnvironment {
+                id: Uuid::new_v4().to_string(),
+                name: "Development".to_owned(),
+                variables: Vec::new(),
+            },
+            WorkspaceEnvironment {
+                id: Uuid::new_v4().to_string(),
+                name: "development".to_owned(),
+                variables: Vec::new(),
+            },
+        ];
+        assert!(validate_environments(&duplicate_names).is_err());
     }
 }

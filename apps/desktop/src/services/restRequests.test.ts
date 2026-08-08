@@ -34,6 +34,7 @@ describe("REST request service", () => {
       url: "https://example.com/todos/1",
       headers: [],
       body: null,
+      variables: [],
     });
   });
 
@@ -49,6 +50,7 @@ describe("REST request service", () => {
       url: "https://example.com/posts",
       headers: [{ name: "content-type", value: "application/json" }],
       body: '{ "title": "GetRest" }',
+      variables: [],
     });
   });
 
@@ -65,5 +67,28 @@ describe("REST request service", () => {
     ).rejects.toThrow("Only HTTP and HTTPS request URLs are supported.");
 
     expect(invokeRestRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards environment templates to the native resolver", async () => {
+    await sendRestRequest({
+      method: "POST",
+      url: "{{baseUrl}}/posts/{{postId}}",
+      body: '{"id":"{{postId}}"}',
+      variables: [
+        { name: "baseUrl", value: "https://example.com" },
+        { name: "postId", value: "42" },
+      ],
+    });
+
+    expect(invokeRestRequestMock).toHaveBeenCalledWith({
+      method: "POST",
+      url: "{{baseUrl}}/posts/{{postId}}",
+      headers: [{ name: "content-type", value: "application/json" }],
+      body: '{"id":"{{postId}}"}',
+      variables: [
+        { name: "baseUrl", value: "https://example.com" },
+        { name: "postId", value: "42" },
+      ],
+    });
   });
 });
