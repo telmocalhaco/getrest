@@ -15,9 +15,11 @@ interface is built with React and TypeScript.
 > creation. Requests and collections support explicit create, update, and delete
 > operations in workspace repositories. Workspaces can also define selectable,
 > non-secret environments whose variables are resolved in request URLs and
-> bodies by the native engine. Automatic
-> persistence while editing, remote synchronization, advanced request options,
-> and the remaining protocols are still under development.
+> bodies by the native engine. Collections can be executed as ordered flows,
+> pass extracted JSON values between requests, and generate bounded concurrent
+> load through the native runner. Automatic persistence while editing, remote
+> synchronization, advanced request options, and the remaining protocols are
+> still under development.
 
 ## Product principles
 
@@ -45,6 +47,8 @@ interface is built with React and TypeScript.
   URLs and bodies.
 - Inspect response status, timing, headers, cookies, and formatted bodies.
 - Keep local request history and reusable examples.
+- Run collections as functional flows or controlled load tests with per-step
+  extraction, latency percentiles, throughput, and error summaries.
 - Import and export common API description and request formats.
 - Protect sensitive values using the operating system's credential store.
 

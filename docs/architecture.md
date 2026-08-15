@@ -206,6 +206,23 @@ The local SQLite database stores workspace locations, recent usage, history,
 and application state. It does not replace the workspace repository as the
 portable source of truth.
 
+### Collection runner and load testing
+
+Collection flows are ordered lists of saved requests. Each virtual user runs
+the list sequentially and owns an isolated copy of the selected environment
+variables. A step can extract a scalar or JSON value through a dotted path such
+as `data.user.id` or `items.0.id`; the extracted value becomes a runtime
+variable available to later URL and body templates.
+
+The Rust network engine owns flow execution and concurrency. Functional runs
+use one virtual user and one iteration. Load runs can use up to 50 virtual
+users, include a configurable delay between steps, and are capped at 10,000
+HTTP requests per invocation. The interface requires an explicit permission
+confirmation before starting load traffic. Results contain aggregate timings,
+p95 latency, throughput, pass/fail counts, per-step metrics, and a bounded set
+of error samples. Response bodies and extracted values are not persisted in
+the result, reducing the risk of storing sensitive data.
+
 When creating a workspace, the user explicitly chooses whether to include the
 collections currently loaded in the application or start with an empty
 repository. The workspace selector can activate registered workspaces, rename

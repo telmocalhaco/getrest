@@ -39,6 +39,14 @@ Resolution is intentionally single-pass. Environment files must never contain
 passwords, tokens, API keys, or other secrets; protected variables will use the
 operating system credential store in a later implementation.
 
+The collection options menu also opens a native collection runner. Requests can
+be reordered into a flow, and JSON response values can be extracted by dotted
+paths into variables used by later steps. Functional mode runs the flow once;
+load mode supports isolated virtual users, iterations, and think time, with a
+hard limit of 10,000 requests per run. The result reports per-step success,
+average and p95 latency, throughput, and bounded error samples without
+persisting response bodies.
+
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
