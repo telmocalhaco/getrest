@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+import { CollectionRunnerDialog } from "./CollectionRunnerDialog";
 import type {
   HttpMethod,
   RestRequestSnapshot,
@@ -393,6 +394,8 @@ function App() {
   const [isRenamingCollection, setIsRenamingCollection] = useState(false);
   const [requestMenuOpen, setRequestMenuOpen] = useState(false);
   const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
+  const [runnerDialogOpen, setRunnerDialogOpen] = useState(false);
+  const [runnerCollection, setRunnerCollection] = useState("");
   const [collectionDialogPurpose, setCollectionDialogPurpose] = useState<
     "create" | "rename"
   >("rename");
@@ -902,6 +905,17 @@ function App() {
     setEnvironmentDialogOpen(true);
   };
 
+  const openCollectionRunner = () => {
+    const preferredCollection =
+      selected.collection && collectionNames.includes(selected.collection)
+        ? selected.collection
+        : (collectionNames[0] ?? "");
+    if (!preferredCollection) return;
+    setRunnerCollection(preferredCollection);
+    setCollectionMenuOpen(false);
+    setRunnerDialogOpen(true);
+  };
+
   const updateEnvironmentVariable = (
     index: number,
     field: keyof EnvironmentVariable,
@@ -1149,7 +1163,7 @@ function App() {
               aria-haspopup="menu"
               aria-label="Collection options"
               className="icon-button compact"
-              disabled={!workspace}
+              disabled={collections.length === 0}
               onClick={() => setCollectionMenuOpen((open) => !open)}
               type="button"
             >
@@ -1173,7 +1187,7 @@ function App() {
                   </span>
                 </button>
                 <button
-                  disabled={collections.length === 0}
+                  disabled={!workspace || collections.length === 0}
                   onClick={openRenameCollectionDialog}
                   role="menuitem"
                   type="button"
@@ -1185,8 +1199,20 @@ function App() {
                   </span>
                 </button>
                 <button
-                  className="danger-action"
                   disabled={collections.length === 0}
+                  onClick={openCollectionRunner}
+                  role="menuitem"
+                  type="button"
+                >
+                  <Icon name="bolt" size={15} />
+                  <span>
+                    <strong>Run collection</strong>
+                    <small>Build a flow or simulate API traffic</small>
+                  </span>
+                </button>
+                <button
+                  className="danger-action"
+                  disabled={!workspace || collections.length === 0}
                   onClick={openDeleteCollectionDialog}
                   role="menuitem"
                   type="button"
@@ -1592,6 +1618,15 @@ function App() {
           </span>
         </footer>
       </section>
+      {runnerDialogOpen && (
+        <CollectionRunnerDialog
+          collections={collections}
+          initialCollection={runnerCollection}
+          onClose={() => setRunnerDialogOpen(false)}
+          requests={requests}
+          variables={activeEnvironment?.variables ?? []}
+        />
+      )}
       {environmentDialogOpen && (
         <div className="modal-backdrop">
           <section

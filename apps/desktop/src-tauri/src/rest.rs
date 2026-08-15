@@ -10,46 +10,55 @@ const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestRequest {
-    method: String,
-    url: String,
-    headers: Vec<RestHeader>,
-    body: Option<String>,
+    pub(crate) method: String,
+    pub(crate) url: String,
+    pub(crate) headers: Vec<RestHeader>,
+    pub(crate) body: Option<String>,
     #[serde(default)]
-    variables: Vec<RestVariable>,
+    pub(crate) variables: Vec<RestVariable>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RestVariable {
-    name: String,
-    value: String,
+    pub(crate) name: String,
+    pub(crate) value: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestHeader {
     name: String,
     value: String,
 }
 
-#[derive(Debug, Serialize)]
+impl RestHeader {
+    pub(crate) fn json_content_type() -> Self {
+        Self {
+            name: "content-type".to_owned(),
+            value: "application/json".to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestResponse {
-    status: u16,
+    pub(crate) status: u16,
     status_text: String,
     headers: Vec<RestHeader>,
-    body: String,
-    duration_ms: u64,
+    pub(crate) body: String,
+    pub(crate) duration_ms: u64,
     size_bytes: u64,
     content_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
-    code: &'static str,
-    message: String,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
 impl CommandError {
@@ -77,16 +86,16 @@ struct ValidatedRequest {
 
 #[tauri::command]
 pub async fn send_rest_request(request: RestRequest) -> Result<RestResponse, CommandError> {
-    let request = validate_request(request)?;
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("GetRest/0.1")
-        .build()
-        .map_err(|_| {
-            CommandError::request_failed("The native HTTP client could not be initialized.")
-        })?;
+    let client = build_http_client()?;
 
+    execute_rest_request(&client, request).await
+}
+
+pub(crate) async fn execute_rest_request(
+    client: &reqwest::Client,
+    request: RestRequest,
+) -> Result<RestResponse, CommandError> {
+    let request = validate_request(request)?;
     let mut builder = client
         .request(request.method, request.url)
         .headers(request.headers);
@@ -137,6 +146,17 @@ pub async fn send_rest_request(request: RestRequest) -> Result<RestResponse, Com
         size_bytes,
         content_type,
     })
+}
+
+pub(crate) fn build_http_client() -> Result<reqwest::Client, CommandError> {
+    reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent("GetRest/0.1")
+        .build()
+        .map_err(|_| {
+            CommandError::request_failed("The native HTTP client could not be initialized.")
+        })
 }
 
 fn validate_request(request: RestRequest) -> Result<ValidatedRequest, CommandError> {

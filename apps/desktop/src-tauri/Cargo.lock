@@ -1146,6 +1146,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "time",
+ "tokio",
  "uuid",
 ]
 
