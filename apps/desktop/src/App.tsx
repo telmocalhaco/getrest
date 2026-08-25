@@ -3,6 +3,7 @@ import "./App.css";
 import { CollectionRunnerDialog } from "./CollectionRunnerDialog";
 import type {
   HttpMethod,
+  RestHeader,
   RestRequestSnapshot,
   RestResponse,
 } from "./domain/rest";
@@ -34,6 +35,8 @@ import {
   renameWorkspaceCollection,
   saveWorkspaceRequest,
   selectWorkspaceDirectory,
+  exportWorkspaceKey,
+  importWorkspaceKey,
   WorkspaceServiceError,
 } from "./services/workspaces";
 
@@ -63,6 +66,7 @@ interface RequestExample {
   path: string;
   collection: string;
   body: string;
+  headers: RestHeader[];
 }
 
 type DeleteTarget =
@@ -77,6 +81,7 @@ const initialRequests: RequestExample[] = [
     path: "https://jsonplaceholder.typicode.com/todos/1",
     collection: "Public API",
     body: "",
+    headers: [],
   },
   {
     id: "posts",
@@ -85,6 +90,7 @@ const initialRequests: RequestExample[] = [
     path: "https://jsonplaceholder.typicode.com/posts?_limit=5",
     collection: "Public API",
     body: "",
+    headers: [],
   },
   {
     id: "create-post",
@@ -93,6 +99,7 @@ const initialRequests: RequestExample[] = [
     path: "https://jsonplaceholder.typicode.com/posts",
     collection: "Public API",
     body: '{\n  "title": "GetRest request",\n  "body": "Sent by the native Rust engine",\n  "userId": 1\n}',
+    headers: [],
   },
 ];
 
@@ -103,6 +110,7 @@ const emptyRequest: RequestExample = {
   path: "",
   collection: "",
   body: "",
+  headers: [],
 };
 
 const methods: HttpMethod[] = [
@@ -310,12 +318,13 @@ function collectionsFromRequests(
   return [...grouped.entries()].map(([name, collectionRequests]) => ({
     name,
     requests: collectionRequests.map(
-      ({ id, name: requestName, method, path, body }) => ({
+      ({ id, name: requestName, method, path, body, headers }) => ({
         id,
         name: requestName,
         method,
         path,
         body,
+        headers,
       }),
     ),
   }));
@@ -331,6 +340,7 @@ function requestsFromCollections(
         ...request,
         method: request.method as HttpMethod,
         collection: collection.name,
+        headers: request.headers ?? [],
       })),
   );
 }
@@ -376,6 +386,11 @@ function App() {
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   const [isRenamingWorkspace, setIsRenamingWorkspace] = useState(false);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
+  const [isTransferringWorkspaceKey, setIsTransferringWorkspaceKey] =
+    useState(false);
+  const [workspaceKeyStatus, setWorkspaceKeyStatus] = useState<string | null>(
+    null,
+  );
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [saveDialogPurpose, setSaveDialogPurpose] = useState<"save" | "rename">(
     "save",
@@ -425,6 +440,9 @@ function App() {
   const [methodDraft, setMethodDraft] = useState<HttpMethod>(selected.method);
   const [urlDraft, setUrlDraft] = useState(selected.path);
   const [bodyDraft, setBodyDraft] = useState(selected.body);
+  const [headerDrafts, setHeaderDrafts] = useState<RestHeader[]>(
+    selected.headers,
+  );
   const urlHighlightRef = useRef<HTMLDivElement>(null);
   const bodyHighlightRef = useRef<HTMLPreElement>(null);
   const activeEnvironment = environments.find(
@@ -446,13 +464,26 @@ function App() {
         setWorkspace(storedWorkspace);
         setWorkspaceName(storedWorkspace?.name ?? "");
         if (storedWorkspace) {
-          const [storedCollections, storedEnvironments] = await Promise.all([
-            loadWorkspaceCollections(storedWorkspace.id),
-            loadWorkspaceEnvironments(storedWorkspace.id),
-          ]);
-          if (active) {
-            applyCollections(storedCollections);
-            applyEnvironments(storedEnvironments);
+          try {
+            const [storedCollections, storedEnvironments] = await Promise.all([
+              loadWorkspaceCollections(storedWorkspace.id),
+              loadWorkspaceEnvironments(storedWorkspace.id),
+            ]);
+            if (active) {
+              applyCollections(storedCollections);
+              applyEnvironments(storedEnvironments);
+            }
+          } catch (error) {
+            if (active) {
+              setCollectionNames([]);
+              applyRequests([]);
+              applyEnvironments([]);
+              setWorkspaceError(
+                error instanceof Error
+                  ? error.message
+                  : "The workspace collections could not be loaded.",
+              );
+            }
           }
         }
       })
@@ -481,6 +512,7 @@ function App() {
     setMethodDraft(request.method);
     setUrlDraft(request.path);
     setBodyDraft(request.body);
+    setHeaderDrafts(request.headers);
     setResponseTab("Response");
     setResponse(null);
     setRequestError(null);
@@ -499,13 +531,28 @@ function App() {
     setIsSending(true);
     setResponse(null);
     setRequestError(null);
+    const requestHeaders = headerDrafts
+      .filter((header) => header.name.trim())
+      .map((header) => ({
+        name: header.name.trim(),
+        value: header.value.trim(),
+      }));
+    if (
+      bodyDraft.trim() &&
+      !["GET", "HEAD"].includes(methodDraft) &&
+      !requestHeaders.some(
+        (header) => header.name.toLowerCase() === "content-type",
+      )
+    ) {
+      requestHeaders.push({
+        name: "content-type",
+        value: "application/json",
+      });
+    }
     setLastRequest({
       method: methodDraft,
       url: urlDraft.trim(),
-      headers:
-        bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft)
-          ? [{ name: "content-type", value: "application/json" }]
-          : [],
+      headers: requestHeaders,
       body:
         bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft)
           ? bodyDraft.trim()
@@ -518,6 +565,7 @@ function App() {
       const result = await sendRestRequest({
         method: methodDraft,
         url: urlDraft,
+        headers: headerDrafts,
         body: bodyDraft,
         variables: activeEnvironment?.variables ?? [],
       });
@@ -551,6 +599,7 @@ function App() {
     setMethodDraft(first.method);
     setUrlDraft(first.path);
     setBodyDraft(first.body);
+    setHeaderDrafts(first.headers);
     setResponse(null);
     setRequestError(null);
     setLastRequest(null);
@@ -581,7 +630,8 @@ function App() {
     setWorkspaceDialogOpen(true);
     setWorkspaceDialogMode(workspace ? "manage" : "create");
     setWorkspaceDirectory("");
-    setWorkspaceError(null);
+    if (!workspace) setWorkspaceError(null);
+    setWorkspaceKeyStatus(null);
     setWorkspaceName(workspace?.name ?? "");
     setWorkspaceContent(requests.length > 0 ? "move" : "empty");
     setGitIdentityRequired(false);
@@ -643,6 +693,7 @@ function App() {
                       method: methodDraft,
                       path: urlDraft,
                       body: bodyDraft,
+                      headers: headerDrafts,
                     }
                   : request,
               ),
@@ -696,21 +747,70 @@ function App() {
     }
   };
 
+  const exportActiveWorkspaceKey = async () => {
+    if (!workspace || isTransferringWorkspaceKey) return;
+    setIsTransferringWorkspaceKey(true);
+    setWorkspaceError(null);
+    setWorkspaceKeyStatus(null);
+    try {
+      const path = await exportWorkspaceKey(workspace.id);
+      if (path) setWorkspaceKeyStatus(`Encryption key exported to ${path}`);
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace encryption key could not be exported.",
+      );
+    } finally {
+      setIsTransferringWorkspaceKey(false);
+    }
+  };
+
+  const importActiveWorkspaceKey = async () => {
+    if (!workspace || isTransferringWorkspaceKey) return;
+    setIsTransferringWorkspaceKey(true);
+    setWorkspaceError(null);
+    setWorkspaceKeyStatus(null);
+    try {
+      const imported = await importWorkspaceKey(workspace.id);
+      if (imported) {
+        const collections = await loadWorkspaceCollections(workspace.id);
+        applyCollections(collections, selected.id);
+        setWorkspaceKeyStatus("Encryption key imported successfully.");
+      }
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "The workspace encryption key could not be imported.",
+      );
+    } finally {
+      setIsTransferringWorkspaceKey(false);
+    }
+  };
+
   const switchWorkspace = async (id: string) => {
     if (workspace?.id === id || isSwitchingWorkspace) return;
     setIsSwitchingWorkspace(true);
     setWorkspaceError(null);
     try {
       const activated = await activateWorkspace(id);
-      const [collections, storedEnvironments] = await Promise.all([
-        loadWorkspaceCollections(id),
-        loadWorkspaceEnvironments(id),
-      ]);
       setWorkspace(activated);
       setWorkspaceName(activated.name);
-      applyCollections(collections);
-      applyEnvironments(storedEnvironments);
-      setWorkspaceDialogOpen(false);
+      try {
+        const [collections, storedEnvironments] = await Promise.all([
+          loadWorkspaceCollections(id),
+          loadWorkspaceEnvironments(id),
+        ]);
+        applyCollections(collections);
+        applyEnvironments(storedEnvironments);
+        setWorkspaceDialogOpen(false);
+      } catch (error) {
+        setCollectionNames([]);
+        applyRequests([]);
+        applyEnvironments([]);
+        throw error;
+      }
     } catch (error) {
       setWorkspaceError(
         error instanceof Error
@@ -758,6 +858,7 @@ function App() {
     setMethodDraft("GET");
     setUrlDraft("");
     setBodyDraft("");
+    setHeaderDrafts([]);
     setRequestTab("Body");
     setResponseTab("Response");
     setResponse(null);
@@ -779,6 +880,7 @@ function App() {
           method: methodDraft,
           path: urlDraft,
           body: bodyDraft,
+          headers: headerDrafts,
         },
       );
       setWorkspace(result.workspace);
@@ -985,8 +1087,37 @@ function App() {
   const bodyLines = (bodyDraft || "No body for this request.").split("\n");
   const responseText = response ? formatResponseBody(response) : "";
   const requestHeaderCount =
-    bodyDraft.trim() && !["GET", "HEAD"].includes(methodDraft) ? 1 : 0;
+    headerDrafts.filter((header) => header.name.trim()).length +
+    (bodyDraft.trim() &&
+    !["GET", "HEAD"].includes(methodDraft) &&
+    !headerDrafts.some(
+      (header) => header.name.trim().toLowerCase() === "content-type",
+    )
+      ? 1
+      : 0);
   const collections = collectionNames;
+
+  const addHeader = () => {
+    setHeaderDrafts((headers) => [...headers, { name: "", value: "" }]);
+  };
+
+  const updateHeader = (
+    index: number,
+    field: keyof RestHeader,
+    value: string,
+  ) => {
+    setHeaderDrafts((headers) =>
+      headers.map((header, headerIndex) =>
+        headerIndex === index ? { ...header, [field]: value } : header,
+      ),
+    );
+  };
+
+  const removeHeader = (index: number) => {
+    setHeaderDrafts((headers) =>
+      headers.filter((_, headerIndex) => headerIndex !== index),
+    );
+  };
 
   const requestContent = () => {
     if (requestTab === "Body")
@@ -1028,14 +1159,78 @@ function App() {
           </div>
         </div>
       );
+    if (requestTab === "Headers") {
+      if (headerDrafts.length === 0) {
+        return (
+          <div className="empty-state">
+            <div className="empty-icon">
+              <Icon name="code" size={20} />
+            </div>
+            <strong>Request headers</strong>
+            <span>Add headers that should be sent with this request.</span>
+            <button
+              className="secondary-button"
+              onClick={addHeader}
+              type="button"
+            >
+              <Icon name="plus" size={15} /> Add header
+            </button>
+          </div>
+        );
+      }
+
+      return (
+        <div className="header-editor">
+          <div aria-hidden="true" className="header-editor-heading">
+            <span>Name</span>
+            <span>Value</span>
+            <span />
+          </div>
+          {headerDrafts.map((header, index) => (
+            <div className="header-editor-row" key={index}>
+              <input
+                aria-label={`Header ${index + 1} name`}
+                autoFocus={index === headerDrafts.length - 1 && !header.name}
+                onChange={(event) =>
+                  updateHeader(index, "name", event.target.value)
+                }
+                placeholder="Header name"
+                spellCheck={false}
+                value={header.name}
+              />
+              <input
+                aria-label={`Header ${index + 1} value`}
+                onChange={(event) =>
+                  updateHeader(index, "value", event.target.value)
+                }
+                placeholder="Header value"
+                spellCheck={false}
+                value={header.value}
+              />
+              <button
+                aria-label={`Remove header ${index + 1}`}
+                className="icon-button compact"
+                onClick={() => removeHeader(index)}
+                type="button"
+              >
+                <Icon name="trash" size={16} />
+              </button>
+            </div>
+          ))}
+          <button
+            className="secondary-button add-header-button"
+            onClick={addHeader}
+            type="button"
+          >
+            <Icon name="plus" size={15} /> Add header
+          </button>
+        </div>
+      );
+    }
     const emptyStates = {
       Params: [
         "Query parameters",
         "Add URL parameters as key and value pairs.",
-      ],
-      Headers: [
-        "Request headers",
-        "Add headers that should be sent with this request.",
       ],
       Auth: [
         "Authentication",
@@ -1449,12 +1644,22 @@ function App() {
           ))}
         </div>
         <div className="editor-toolbar">
-          <button className="format-select" type="button">
-            <Icon name="code" size={16} /> JSON{" "}
-            <Icon name="chevron-down" size={14} />
-          </button>
+          {requestTab === "Body" ? (
+            <button className="format-select" type="button">
+              <Icon name="code" size={16} /> JSON{" "}
+              <Icon name="chevron-down" size={14} />
+            </button>
+          ) : (
+            <span>{requestTab}</span>
+          )}
           <span>
-            {bodyDraft ? `${bodyDraft.split("\n").length} lines` : "Empty body"}
+            {requestTab === "Body"
+              ? bodyDraft
+                ? `${bodyDraft.split("\n").length} lines`
+                : "Empty body"
+              : requestTab === "Headers"
+                ? `${requestHeaderCount} ${requestHeaderCount === 1 ? "header" : "headers"}`
+                : "Not configured"}
           </span>
         </div>
         <div className="request-content">{requestContent()}</div>
@@ -2049,7 +2254,7 @@ function App() {
               <p>
                 {saveDialogPurpose === "rename"
                   ? "Change the item name without changing its method, URL, body, or collection."
-                  : "Save the current method, URL, and body in the workspace repository. Existing items are updated without creating an automatic Git commit."}
+                  : "Save the current method, URL, body, and encrypted header values in the workspace repository. Existing items are updated without creating an automatic Git commit."}
               </p>
               <label className="workspace-field">
                 <span>Request name</span>
@@ -2193,6 +2398,38 @@ function App() {
                       </button>
                     </div>
                   </label>
+                  <section className="workspace-key-card">
+                    <div>
+                      <strong>Workspace encryption key</strong>
+                      <small>
+                        Header values are encrypted. Export the key only when
+                        you need to open this workspace on another machine.
+                      </small>
+                    </div>
+                    <div>
+                      <button
+                        className="secondary-button"
+                        disabled={isTransferringWorkspaceKey}
+                        onClick={exportActiveWorkspaceKey}
+                        type="button"
+                      >
+                        Export key
+                      </button>
+                      <button
+                        className="secondary-button"
+                        disabled={isTransferringWorkspaceKey}
+                        onClick={importActiveWorkspaceKey}
+                        type="button"
+                      >
+                        Import key
+                      </button>
+                    </div>
+                  </section>
+                  {workspaceKeyStatus && (
+                    <div aria-live="polite" className="workspace-key-status">
+                      {workspaceKeyStatus}
+                    </div>
+                  )}
                   <button
                     className="new-workspace-card"
                     onClick={beginNewWorkspace}

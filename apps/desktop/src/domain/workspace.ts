@@ -1,3 +1,5 @@
+import type { RestHeader } from "./rest";
+
 export type WorkspaceGitState =
   "localOnly" | "clean" | "changes" | "unavailable";
 
@@ -20,6 +22,7 @@ export interface WorkspaceRequest {
   method: string;
   path: string;
   body: string;
+  headers?: RestHeader[];
 }
 
 export interface WorkspaceCollection {

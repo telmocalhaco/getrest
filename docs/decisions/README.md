@@ -21,6 +21,7 @@ Accepted ADRs are immutable historical records. If a decision changes, add a new
 | [0004](0004-native-cross-platform-builds.md)         | Accepted | Build and test natively on three operating systems |
 | [0005](0005-gpl-3-or-later.md)                       | Accepted | License the project under GPL-3.0-or-later         |
 | [0006](0006-dedicated-git-workspace-repositories.md) | Accepted | Use dedicated Git repositories for workspaces      |
+| [0007](0007-encrypted-workspace-values.md)           | Accepted | Encrypt protected values in Git workspaces         |
 
 ## ADR template
 

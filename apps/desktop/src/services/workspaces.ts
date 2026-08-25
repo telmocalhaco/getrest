@@ -6,6 +6,8 @@ import {
   invokeActivateWorkspace,
   invokeCreateWorkspace,
   invokeGetActiveWorkspace,
+  invokeExportWorkspaceKey,
+  invokeImportWorkspaceKey,
   invokeListWorkspaces,
   invokeLoadWorkspaceCollections,
   invokeRenameWorkspace,
@@ -32,6 +34,20 @@ export class WorkspaceServiceError extends Error {
 
 export async function selectWorkspaceDirectory(): Promise<string | null> {
   return runWorkspaceOperation(() => invokeChooseWorkspaceDirectory());
+}
+
+export async function exportWorkspaceKey(
+  workspaceId: string,
+): Promise<string | null> {
+  const id = requireWorkspaceId(workspaceId);
+  return runWorkspaceOperation(() => invokeExportWorkspaceKey(id));
+}
+
+export async function importWorkspaceKey(
+  workspaceId: string,
+): Promise<boolean> {
+  const id = requireWorkspaceId(workspaceId);
+  return runWorkspaceOperation(() => invokeImportWorkspaceKey(id));
 }
 
 export async function createWorkspace(
@@ -291,4 +307,15 @@ async function runWorkspaceOperation<T>(
     }
     throw error;
   }
+}
+
+function requireWorkspaceId(value: string): string {
+  const id = value.trim();
+  if (!id) {
+    throw new WorkspaceServiceError(
+      "workspace_required",
+      "Create or select a workspace first.",
+    );
+  }
+  return id;
 }

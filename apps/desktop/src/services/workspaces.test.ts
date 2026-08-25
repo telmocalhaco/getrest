@@ -6,7 +6,9 @@ import {
   invokeCreateWorkspace,
   invokeDeleteWorkspaceCollection,
   invokeDeleteWorkspaceRequest,
+  invokeExportWorkspaceKey,
   invokeGetActiveWorkspace,
+  invokeImportWorkspaceKey,
   invokeListWorkspaces,
   invokeLoadWorkspaceCollections,
   invokeRenameWorkspace,
@@ -20,7 +22,9 @@ import {
   createWorkspace,
   deleteWorkspaceCollection,
   deleteWorkspaceRequest,
+  exportWorkspaceKey,
   getActiveWorkspace,
+  importWorkspaceKey,
   listWorkspaces,
   loadWorkspaceCollections,
   renameWorkspace,
@@ -47,7 +51,9 @@ vi.mock("../adapters/tauriWorkspaceAdapter", () => {
     invokeCreateWorkspace: vi.fn(),
     invokeDeleteWorkspaceCollection: vi.fn(),
     invokeDeleteWorkspaceRequest: vi.fn(),
+    invokeExportWorkspaceKey: vi.fn(),
     invokeGetActiveWorkspace: vi.fn(),
+    invokeImportWorkspaceKey: vi.fn(),
     invokeListWorkspaces: vi.fn(),
     invokeLoadWorkspaceCollections: vi.fn(),
     invokeRenameWorkspace: vi.fn(),
@@ -67,7 +73,9 @@ const deleteWorkspaceCollectionMock = vi.mocked(
   invokeDeleteWorkspaceCollection,
 );
 const deleteWorkspaceRequestMock = vi.mocked(invokeDeleteWorkspaceRequest);
+const exportWorkspaceKeyMock = vi.mocked(invokeExportWorkspaceKey);
 const getActiveWorkspaceMock = vi.mocked(invokeGetActiveWorkspace);
+const importWorkspaceKeyMock = vi.mocked(invokeImportWorkspaceKey);
 const listWorkspacesMock = vi.mocked(invokeListWorkspaces);
 const loadWorkspaceCollectionsMock = vi.mocked(invokeLoadWorkspaceCollections);
 const renameWorkspaceMock = vi.mocked(invokeRenameWorkspace);
@@ -84,7 +92,9 @@ describe("workspace service", () => {
     createWorkspaceMock.mockReset();
     deleteWorkspaceCollectionMock.mockReset();
     deleteWorkspaceRequestMock.mockReset();
+    exportWorkspaceKeyMock.mockReset();
     getActiveWorkspaceMock.mockReset();
+    importWorkspaceKeyMock.mockReset();
     listWorkspacesMock.mockReset();
     loadWorkspaceCollectionsMock.mockReset();
     renameWorkspaceMock.mockReset();
@@ -310,6 +320,19 @@ describe("workspace service", () => {
       workspaceId: "workspace-1",
       name: "Empty API",
     });
+  });
+
+  it("keeps workspace encryption key transfers inside the typed adapter", async () => {
+    exportWorkspaceKeyMock.mockResolvedValue("/tmp/getrest-key.json");
+    importWorkspaceKeyMock.mockResolvedValue(true);
+
+    await expect(exportWorkspaceKey(" workspace-1 ")).resolves.toBe(
+      "/tmp/getrest-key.json",
+    );
+    await expect(importWorkspaceKey(" workspace-1 ")).resolves.toBe(true);
+
+    expect(exportWorkspaceKeyMock).toHaveBeenCalledWith("workspace-1");
+    expect(importWorkspaceKeyMock).toHaveBeenCalledWith("workspace-1");
   });
 
   it("normalizes identifiers before deleting a request", async () => {

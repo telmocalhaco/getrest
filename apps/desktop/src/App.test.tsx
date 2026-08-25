@@ -25,7 +25,9 @@ const workspaceMocks = vi.hoisted(() => {
     create: vi.fn(),
     deleteCollection: vi.fn(),
     deleteRequest: vi.fn(),
+    exportKey: vi.fn(),
     getActive: vi.fn(),
+    importKey: vi.fn(),
     list: vi.fn(),
     loadCollections: vi.fn(),
     rename: vi.fn(),
@@ -50,7 +52,9 @@ vi.mock("./services/workspaces", () => ({
   createWorkspace: workspaceMocks.create,
   deleteWorkspaceCollection: workspaceMocks.deleteCollection,
   deleteWorkspaceRequest: workspaceMocks.deleteRequest,
+  exportWorkspaceKey: workspaceMocks.exportKey,
   getActiveWorkspace: workspaceMocks.getActive,
+  importWorkspaceKey: workspaceMocks.importKey,
   listWorkspaces: workspaceMocks.list,
   loadWorkspaceCollections: workspaceMocks.loadCollections,
   renameWorkspace: workspaceMocks.rename,
@@ -71,7 +75,9 @@ describe("GetRest desktop shell", () => {
     workspaceMocks.create.mockReset();
     workspaceMocks.deleteCollection.mockReset();
     workspaceMocks.deleteRequest.mockReset();
+    workspaceMocks.exportKey.mockReset();
     workspaceMocks.getActive.mockReset();
+    workspaceMocks.importKey.mockReset();
     workspaceMocks.list.mockReset();
     workspaceMocks.loadCollections.mockReset();
     workspaceMocks.rename.mockReset();
@@ -79,6 +85,8 @@ describe("GetRest desktop shell", () => {
     workspaceMocks.saveRequest.mockReset();
     workspaceMocks.selectDirectory.mockReset();
     workspaceMocks.getActive.mockResolvedValue(null);
+    workspaceMocks.exportKey.mockResolvedValue(null);
+    workspaceMocks.importKey.mockResolvedValue(false);
     workspaceMocks.list.mockResolvedValue([]);
     workspaceMocks.loadCollections.mockResolvedValue([]);
     environmentMocks.load.mockResolvedValue([]);
@@ -120,6 +128,7 @@ describe("GetRest desktop shell", () => {
         method: "GET",
         path: "https://jsonplaceholder.typicode.com/todos/1",
         body: "",
+        headers: [],
       },
     });
     workspaceMocks.renameCollection.mockResolvedValue({
@@ -255,6 +264,7 @@ describe("GetRest desktop shell", () => {
     expect(sendRestRequestMock).toHaveBeenCalledWith({
       method: "GET",
       url: "https://jsonplaceholder.typicode.com/todos/1",
+      headers: [],
       body: "",
       variables: [],
     });
@@ -345,6 +355,7 @@ describe("GetRest desktop shell", () => {
     expect(sendRestRequestMock).toHaveBeenCalledWith({
       method: "POST",
       url: "{{baseUrl}}/todos",
+      headers: [],
       body: '{"user":"{{userId}}"}',
       variables: [
         { name: "baseUrl", value: "https://dev.example.com" },
@@ -402,6 +413,37 @@ describe("GetRest desktop shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("adds, removes, and sends request headers", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      within(
+        screen.getByRole("tablist", { name: "Request details" }),
+      ).getByRole("tab", { name: "Headers" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Add header" }));
+    await user.type(screen.getByLabelText("Header 1 name"), "X-Client");
+    await user.type(screen.getByLabelText("Header 1 value"), "GetRest");
+    await user.click(screen.getByRole("button", { name: "Add header" }));
+    await user.type(screen.getByLabelText("Header 2 name"), "X-Remove");
+    await user.click(screen.getByLabelText("Remove header 2"));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(sendRestRequestMock).toHaveBeenCalledWith({
+      method: "GET",
+      url: "https://jsonplaceholder.typicode.com/todos/1",
+      headers: [{ name: "X-Client", value: "GetRest" }],
+      body: "",
+      variables: [],
+    });
+    expect(
+      within(
+        screen.getByRole("tablist", { name: "Request details" }),
+      ).getByRole("tab", { name: /Headers 1/ }),
+    ).toBeInTheDocument();
+  });
+
   it("shows native request errors without exposing implementation details", async () => {
     sendRestRequestMock.mockRejectedValueOnce(
       new Error("The remote API could not be reached."),
@@ -444,6 +486,17 @@ describe("GetRest desktop shell", () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(
+      within(
+        screen.getByRole("tablist", { name: "Request details" }),
+      ).getByRole("tab", { name: "Headers" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Add header" }));
+    await user.type(screen.getByLabelText("Header 1 name"), "Authorization");
+    await user.type(
+      screen.getByLabelText("Header 1 value"),
+      "Bearer private-token",
+    );
     await user.click(screen.getByRole("button", { name: "Save" }));
     const dialog = screen.getByRole("dialog", { name: "Save request" });
     const nameInput = within(dialog).getByLabelText("Request name");
@@ -462,6 +515,7 @@ describe("GetRest desktop shell", () => {
         method: "GET",
         path: "https://jsonplaceholder.typicode.com/todos/1",
         body: "",
+        headers: [{ name: "Authorization", value: "Bearer private-token" }],
       },
     );
     expect(
@@ -973,5 +1027,100 @@ describe("GetRest desktop shell", () => {
     expect(
       screen.getByRole("dialog", { name: "Create workspace" }),
     ).toBeInTheDocument();
+  });
+
+  it("exports and imports the active workspace encryption key", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Private workspace",
+      path: "/tmp/private-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.list.mockResolvedValue([activeWorkspace]);
+    workspaceMocks.exportKey.mockResolvedValue("/tmp/private-key.json");
+    workspaceMocks.importKey.mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Private workspace" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Workspaces" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Export key" }),
+    );
+    expect(workspaceMocks.exportKey).toHaveBeenCalledWith("workspace-1");
+    expect(
+      await within(dialog).findByText(/private-key\.json/),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Import key" }),
+    );
+    expect(workspaceMocks.importKey).toHaveBeenCalledWith("workspace-1");
+    expect(
+      await within(dialog).findByText("Encryption key imported successfully."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a protected workspace available while its key is missing", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Shared workspace",
+      path: "/tmp/shared-workspace",
+      gitState: "clean" as const,
+      hasRemote: true,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.list.mockResolvedValue([activeWorkspace]);
+    workspaceMocks.loadCollections
+      .mockRejectedValueOnce(
+        new Error(
+          "Import this workspace's encryption key to read its protected values.",
+        ),
+      )
+      .mockResolvedValueOnce([
+        {
+          name: "Private API",
+          requests: [
+            {
+              id: "private-request",
+              name: "Private request",
+              method: "GET",
+              path: "https://example.com/private",
+              body: "",
+              headers: [{ name: "Authorization", value: "Bearer restored" }],
+            },
+          ],
+        },
+      ]);
+    workspaceMocks.importKey.mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Shared workspace" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Workspaces" });
+    expect(
+      await within(dialog).findByText(/Import this workspace's encryption key/),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Import key" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Private request" }),
+    ).toBeInTheDocument();
+    await user.click(
+      within(
+        screen.getByRole("tablist", { name: "Request details" }),
+      ).getByRole("tab", { name: /Headers 1/ }),
+    );
+    expect(screen.getByLabelText("Header 1 value")).toHaveValue(
+      "Bearer restored",
+    );
   });
 });

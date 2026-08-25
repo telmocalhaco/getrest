@@ -19,6 +19,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
+keyring = "4.1.6"
 reqwest = { version = "0.13", default-features = false, features = ["charset", "http2", "rustls", "system-proxy"] }
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -28,6 +31,7 @@ tauri-plugin-dialog = "2"
 time = { version = "0.3", features = ["formatting"] }
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["time"] }
+zeroize = "1"
 
 [dev-dependencies]
 tempfile = "3"

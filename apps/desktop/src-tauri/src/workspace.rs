@@ -1,3 +1,7 @@
+use crate::secrets::{
+    decrypt_value, delete_workspace_key, encrypt_value, load_or_create_workspace_key,
+    load_workspace_key, EncryptedValue, SecretError, WorkspaceKey,
+};
 use reqwest::Url;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -20,6 +24,8 @@ const INITIAL_COMMIT_MESSAGE: &str = "chore: initialize GetRest workspace";
 const RENAME_COMMIT_MESSAGE: &str = "chore: rename GetRest workspace";
 const MAX_COLLECTION_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_ENVIRONMENT_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_KEY_EXPORT_BYTES: u64 = 16 * 1024;
+const KEY_EXPORT_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,6 +130,8 @@ pub struct UnsavedWorkspaceRequest {
     method: String,
     path: String,
     body: String,
+    #[serde(default)]
+    headers: Vec<WorkspaceHeader>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -141,6 +149,41 @@ pub struct WorkspaceRequest {
     method: String,
     path: String,
     body: String,
+    #[serde(default)]
+    headers: Vec<WorkspaceHeader>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceHeader {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredWorkspaceCollection {
+    name: String,
+    requests: Vec<StoredWorkspaceRequest>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredWorkspaceRequest {
+    id: String,
+    name: String,
+    method: String,
+    path: String,
+    body: String,
+    #[serde(default)]
+    headers: Vec<StoredWorkspaceHeader>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredWorkspaceHeader {
+    name: String,
+    value: EncryptedValue,
 }
 
 #[derive(Debug, Serialize)]
@@ -201,6 +244,17 @@ struct WorkspaceManifest {
     created_at: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceKeyExport {
+    format: String,
+    version: u32,
+    workspace_id: String,
+    algorithm: String,
+    key: String,
+    warning: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceCommandError {
@@ -243,6 +297,129 @@ pub async fn choose_workspace_directory(
         WorkspaceCommandError::new(
             "folder_dialog_failed",
             "The workspace folder dialog stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn export_workspace_key(
+    app: AppHandle,
+    workspace_id: String,
+) -> Result<Option<String>, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspace = load_workspace_by_id(&app_data_dir, workspace_id.trim())?;
+        verify_workspace_identity(Path::new(&workspace.path), &workspace.id)?;
+        let destination = app
+            .dialog()
+            .file()
+            .set_title("Export workspace encryption key")
+            .set_file_name(format!("{}-getrest-key.json", file_slug(&workspace.name)))
+            .add_filter("GetRest workspace key", &["json"])
+            .blocking_save_file()
+            .map(|path| {
+                path.into_path().map_err(|_| {
+                    WorkspaceCommandError::new(
+                        "workspace_key_export_failed",
+                        "The selected export path is not supported.",
+                    )
+                })
+            })
+            .transpose()?;
+        let Some(destination) = destination else {
+            return Ok(None);
+        };
+        ensure_key_export_outside_workspace(&destination, Path::new(&workspace.path))?;
+        let key = load_or_create_workspace_key(&workspace.id).map_err(secret_error)?;
+        let export = WorkspaceKeyExport {
+            format: "getrest-workspace-key".to_owned(),
+            version: KEY_EXPORT_VERSION,
+            workspace_id: workspace.id,
+            algorithm: "AES-256-GCM".to_owned(),
+            key: key.export_base64(),
+            warning: "SECRET: anyone with this file can decrypt protected values in this workspace. Never commit it to Git.".to_owned(),
+        };
+        let content = serde_json::to_vec_pretty(&export).map_err(|_| {
+            WorkspaceCommandError::new(
+                "workspace_key_export_failed",
+                "The workspace key export could not be prepared.",
+            )
+        })?;
+        write_private_key_export(&destination, &content)?;
+        path_to_string(&destination).map(Some)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_key_export_failed",
+            "The workspace key export stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn import_workspace_key(
+    app: AppHandle,
+    workspace_id: String,
+) -> Result<bool, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspace = load_workspace_by_id(&app_data_dir, workspace_id.trim())?;
+        let directory = Path::new(&workspace.path);
+        verify_workspace_identity(directory, &workspace.id)?;
+        let source = app
+            .dialog()
+            .file()
+            .set_title("Import workspace encryption key")
+            .add_filter("GetRest workspace key", &["json"])
+            .blocking_pick_file()
+            .map(|path| {
+                path.into_path().map_err(|_| {
+                    WorkspaceCommandError::new(
+                        "workspace_key_import_failed",
+                        "The selected key path is not supported.",
+                    )
+                })
+            })
+            .transpose()?;
+        let Some(source) = source else {
+            return Ok(false);
+        };
+        let canonical_source = fs::canonicalize(&source).map_err(|_| key_import_error())?;
+        let canonical_workspace = fs::canonicalize(directory).map_err(|_| key_import_error())?;
+        if canonical_source.starts_with(canonical_workspace) {
+            return Err(WorkspaceCommandError::new(
+                "workspace_key_import_inside_workspace",
+                "Move the key file outside the workspace before importing it.",
+            ));
+        }
+        let metadata = fs::symlink_metadata(&source).map_err(|_| key_import_error())?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > MAX_KEY_EXPORT_BYTES
+        {
+            return Err(key_import_error());
+        }
+        let export: WorkspaceKeyExport =
+            serde_json::from_slice(&fs::read(&source).map_err(|_| key_import_error())?)
+                .map_err(|_| key_import_error())?;
+        if export.format != "getrest-workspace-key"
+            || export.version != KEY_EXPORT_VERSION
+            || export.workspace_id != workspace.id
+            || export.algorithm != "AES-256-GCM"
+        {
+            return Err(key_import_error());
+        }
+        let key = WorkspaceKey::import_base64(&export.key).map_err(secret_error)?;
+        verify_key_for_stored_collections(directory, &workspace.id, &key)?;
+        crate::secrets::store_workspace_key(&workspace.id, &key).map_err(secret_error)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_key_import_failed",
+            "The workspace key import stopped unexpectedly.",
         )
     })?
 }
@@ -356,7 +533,7 @@ pub async fn load_workspace_collections(
     let app_data_dir = application_data_directory(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let workspace = load_workspace_by_id(&app_data_dir, &id)?;
-        read_workspace_collections(Path::new(&workspace.path))
+        read_workspace_collections(Path::new(&workspace.path), &workspace.id)
     })
     .await
     .map_err(|_| {
@@ -541,6 +718,7 @@ fn create_workspace_repository(
         git_author.as_ref(),
     );
     if let Err(error) = result {
+        delete_workspace_key(&id);
         rollback_initialization(&directory);
         return Err(error);
     }
@@ -726,7 +904,7 @@ fn initialize_repository(
             "The environments folder could not be created.",
         )
     })?;
-    write_workspace_collections(directory, collections)?;
+    write_workspace_collections(directory, &manifest.id, collections)?;
 
     run_git(
         directory,
@@ -749,15 +927,17 @@ fn initialize_repository(
 
 fn write_workspace_collections(
     directory: &Path,
+    workspace_id: &str,
     collections: &[WorkspaceCollection],
 ) -> Result<(), WorkspaceCommandError> {
     let collections_directory = directory.join("collections");
-    write_collection_files(&collections_directory, collections)?;
+    write_collection_files(&collections_directory, workspace_id, collections)?;
     write_new_file(&directory.join("environments").join(".gitkeep"), b"")
 }
 
 fn write_collection_files(
     collections_directory: &Path,
+    workspace_id: &str,
     collections: &[WorkspaceCollection],
 ) -> Result<(), WorkspaceCommandError> {
     if collections.is_empty() {
@@ -765,7 +945,8 @@ fn write_collection_files(
     } else {
         for (index, collection) in collections.iter().enumerate() {
             let file_name = format!("{index:03}-{}.json", file_slug(&collection.name));
-            let content = serde_json::to_string_pretty(collection).map_err(|_| {
+            let stored = encrypt_collection(workspace_id, collection)?;
+            let content = serde_json::to_string_pretty(&stored).map_err(|_| {
                 WorkspaceCommandError::new(
                     "workspace_creation_failed",
                     "A collection could not be prepared for the workspace.",
@@ -778,6 +959,124 @@ fn write_collection_files(
         }
     }
     Ok(())
+}
+
+fn encrypt_collection(
+    workspace_id: &str,
+    collection: &WorkspaceCollection,
+) -> Result<StoredWorkspaceCollection, WorkspaceCommandError> {
+    let key = if collection
+        .requests
+        .iter()
+        .any(|request| !request.headers.is_empty())
+    {
+        Some(load_or_create_workspace_key(workspace_id).map_err(secret_error)?)
+    } else {
+        None
+    };
+    encrypt_collection_with_key(workspace_id, collection, key.as_ref())
+}
+
+fn encrypt_collection_with_key(
+    workspace_id: &str,
+    collection: &WorkspaceCollection,
+    key: Option<&WorkspaceKey>,
+) -> Result<StoredWorkspaceCollection, WorkspaceCommandError> {
+    let requests = collection
+        .requests
+        .iter()
+        .map(|request| {
+            let headers = request
+                .headers
+                .iter()
+                .enumerate()
+                .map(|(index, header)| {
+                    let aad =
+                        header_associated_data(workspace_id, &request.id, &header.name, index);
+                    let key = key.ok_or_else(workspace_key_missing_error)?;
+                    Ok(StoredWorkspaceHeader {
+                        name: header.name.clone(),
+                        value: encrypt_value(key, &header.value, &aad).map_err(secret_error)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, WorkspaceCommandError>>()?;
+            Ok(StoredWorkspaceRequest {
+                id: request.id.clone(),
+                name: request.name.clone(),
+                method: request.method.clone(),
+                path: request.path.clone(),
+                body: request.body.clone(),
+                headers,
+            })
+        })
+        .collect::<Result<Vec<_>, WorkspaceCommandError>>()?;
+    Ok(StoredWorkspaceCollection {
+        name: collection.name.clone(),
+        requests,
+    })
+}
+
+fn decrypt_collection(
+    workspace_id: &str,
+    collection: StoredWorkspaceCollection,
+    key: Option<&WorkspaceKey>,
+) -> Result<WorkspaceCollection, WorkspaceCommandError> {
+    let requests = collection
+        .requests
+        .into_iter()
+        .map(|request| {
+            let headers = request
+                .headers
+                .into_iter()
+                .enumerate()
+                .map(|(index, header)| {
+                    let aad =
+                        header_associated_data(workspace_id, &request.id, &header.name, index);
+                    Ok(WorkspaceHeader {
+                        name: header.name,
+                        value: decrypt_value(
+                            key.ok_or_else(workspace_key_missing_error)?,
+                            &header.value,
+                            &aad,
+                        )
+                        .map_err(secret_error)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, WorkspaceCommandError>>()?;
+            Ok(WorkspaceRequest {
+                id: request.id,
+                name: request.name,
+                method: request.method,
+                path: request.path,
+                body: request.body,
+                headers,
+            })
+        })
+        .collect::<Result<Vec<_>, WorkspaceCommandError>>()?;
+    Ok(WorkspaceCollection {
+        name: collection.name,
+        requests,
+    })
+}
+
+fn header_associated_data(
+    workspace_id: &str,
+    request_id: &str,
+    header_name: &str,
+    index: usize,
+) -> Vec<u8> {
+    format!("getrest-header\0{workspace_id}\0{request_id}\0{index}\0{header_name}").into_bytes()
+}
+
+fn secret_error(error: SecretError) -> WorkspaceCommandError {
+    WorkspaceCommandError::new(error.code, error.message)
+}
+
+fn workspace_key_missing_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "workspace_key_missing",
+        "Import this workspace's encryption key to read its protected values.",
+    )
 }
 
 fn file_slug(value: &str) -> String {
@@ -819,6 +1118,15 @@ fn validate_collections(collections: &[WorkspaceCollection]) -> Result<(), Works
                 || request.path.trim().is_empty()
                 || request.path.len() > 16_384
                 || request.body.len() > MAX_COLLECTION_FILE_BYTES as usize
+                || request.headers.len() > 1_000
+                || request.headers.iter().any(|header| {
+                    !valid_text(&header.name, 1_024)
+                        || header.value.len() > 64 * 1_024
+                        || header
+                            .value
+                            .chars()
+                            .any(|value| matches!(value, '\r' | '\n'))
+                })
                 || !is_http_url_or_template(&request.path)
                 || !matches!(
                     request.method.as_str(),
@@ -990,9 +1298,10 @@ fn save_request_to_workspace(
         method: input.request.method,
         path: input.request.path.trim().to_owned(),
         body: input.request.body,
+        headers: input.request.headers,
     };
 
-    let mut collections = read_workspace_collections(directory)?;
+    let mut collections = read_workspace_collections(directory, &workspace.id)?;
     for collection in &mut collections {
         collection
             .requests
@@ -1010,7 +1319,7 @@ fn save_request_to_workspace(
         });
     }
     validate_collections(&collections)?;
-    replace_workspace_collections(directory, &collections)?;
+    replace_workspace_collections(directory, &workspace.id, &collections)?;
 
     let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
     remember_workspace(app_data_dir, &updated_workspace)?;
@@ -1038,7 +1347,7 @@ fn rename_collection_in_workspace(
         ));
     }
 
-    let mut collections = read_workspace_collections(directory)?;
+    let mut collections = read_workspace_collections(directory, &workspace.id)?;
     let current_index = collections
         .iter()
         .position(|collection| collection.name == current_name)
@@ -1065,7 +1374,7 @@ fn rename_collection_in_workspace(
 
     collections[current_index].name = new_name.to_owned();
     validate_collections(&collections)?;
-    replace_workspace_collections(directory, &collections)?;
+    replace_workspace_collections(directory, &workspace.id, &collections)?;
     let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
     remember_workspace(app_data_dir, &updated_workspace)?;
     Ok(WorkspaceCollectionsMutationResult {
@@ -1089,7 +1398,7 @@ fn create_collection_in_workspace(
             "Enter a valid collection name with at most 100 characters.",
         ));
     }
-    let mut collections = read_workspace_collections(directory)?;
+    let mut collections = read_workspace_collections(directory, &workspace.id)?;
     if collections
         .iter()
         .any(|collection| collection.name.eq_ignore_ascii_case(name))
@@ -1104,7 +1413,7 @@ fn create_collection_in_workspace(
         requests: Vec::new(),
     });
     validate_collections(&collections)?;
-    replace_workspace_collections(directory, &collections)?;
+    replace_workspace_collections(directory, &workspace.id, &collections)?;
     let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
     remember_workspace(app_data_dir, &updated_workspace)?;
     Ok(WorkspaceCollectionsMutationResult {
@@ -1129,7 +1438,7 @@ fn delete_request_from_workspace(
         ));
     }
 
-    let mut collections = read_workspace_collections(directory)?;
+    let mut collections = read_workspace_collections(directory, &workspace.id)?;
     let previous_request_count: usize = collections
         .iter()
         .map(|collection| collection.requests.len())
@@ -1151,7 +1460,7 @@ fn delete_request_from_workspace(
     }
 
     validate_collections(&collections)?;
-    replace_workspace_collections(directory, &collections)?;
+    replace_workspace_collections(directory, &workspace.id, &collections)?;
     collections_mutation_result(app_data_dir, workspace, collections)
 }
 
@@ -1170,7 +1479,7 @@ fn delete_collection_from_workspace(
             "The selected collection no longer exists.",
         ));
     }
-    let mut collections = read_workspace_collections(directory)?;
+    let mut collections = read_workspace_collections(directory, &workspace.id)?;
     let collection_index = collections
         .iter()
         .position(|collection| collection.name == name)
@@ -1183,7 +1492,7 @@ fn delete_collection_from_workspace(
     collections.remove(collection_index);
 
     validate_collections(&collections)?;
-    replace_workspace_collections(directory, &collections)?;
+    replace_workspace_collections(directory, &workspace.id, &collections)?;
     collections_mutation_result(app_data_dir, workspace, collections)
 }
 
@@ -1490,6 +1799,7 @@ fn verify_workspace_identity(
 
 fn replace_workspace_collections(
     directory: &Path,
+    workspace_id: &str,
     collections: &[WorkspaceCollection],
 ) -> Result<(), WorkspaceCommandError> {
     let collections_directory = directory.join("collections");
@@ -1499,7 +1809,7 @@ fn replace_workspace_collections(
     let staging = directory.join(format!(".getrest-collections-{operation_id}"));
     let backup = directory.join(format!(".getrest-collections-backup-{operation_id}"));
     fs::create_dir(&staging).map_err(|_| request_save_error())?;
-    if let Err(error) = write_collection_files(&staging, collections) {
+    if let Err(error) = write_collection_files(&staging, workspace_id, collections) {
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
@@ -1630,7 +1940,29 @@ fn rename_workspace_repository(
 
 fn read_workspace_collections(
     directory: &Path,
+    workspace_id: &str,
 ) -> Result<Vec<WorkspaceCollection>, WorkspaceCommandError> {
+    let stored_collections = read_stored_workspace_collections(directory)?;
+    let has_encrypted_values = stored_collections.iter().any(|collection| {
+        collection
+            .requests
+            .iter()
+            .any(|request| !request.headers.is_empty())
+    });
+    let key = has_encrypted_values
+        .then(|| load_workspace_key(workspace_id).map_err(secret_error))
+        .transpose()?;
+    let collections = stored_collections
+        .into_iter()
+        .map(|collection| decrypt_collection(workspace_id, collection, key.as_ref()))
+        .collect::<Result<Vec<_>, WorkspaceCommandError>>()?;
+    validate_collections(&collections)?;
+    Ok(collections)
+}
+
+fn read_stored_workspace_collections(
+    directory: &Path,
+) -> Result<Vec<StoredWorkspaceCollection>, WorkspaceCommandError> {
     let collections_directory = directory.join("collections");
     if !collections_directory.is_dir() {
         return Ok(Vec::new());
@@ -1647,7 +1979,7 @@ fn read_workspace_collections(
         .collect::<Vec<_>>();
     paths.sort();
 
-    let mut collections = Vec::with_capacity(paths.len());
+    let mut stored_collections = Vec::with_capacity(paths.len());
     for path in paths {
         let metadata =
             fs::symlink_metadata(&path).map_err(|_| workspace_collections_read_error())?;
@@ -1658,12 +1990,82 @@ fn read_workspace_collections(
             return Err(workspace_collections_read_error());
         }
         let content = fs::read(&path).map_err(|_| workspace_collections_read_error())?;
-        let collection = serde_json::from_slice::<WorkspaceCollection>(&content)
+        let collection = serde_json::from_slice::<StoredWorkspaceCollection>(&content)
             .map_err(|_| workspace_collections_read_error())?;
-        collections.push(collection);
+        stored_collections.push(collection);
     }
-    validate_collections(&collections)?;
-    Ok(collections)
+    Ok(stored_collections)
+}
+
+fn verify_key_for_stored_collections(
+    directory: &Path,
+    workspace_id: &str,
+    key: &WorkspaceKey,
+) -> Result<(), WorkspaceCommandError> {
+    for collection in read_stored_workspace_collections(directory)? {
+        decrypt_collection(workspace_id, collection, Some(key))?;
+    }
+    Ok(())
+}
+
+fn ensure_key_export_outside_workspace(
+    destination: &Path,
+    workspace_directory: &Path,
+) -> Result<(), WorkspaceCommandError> {
+    let parent = destination.parent().ok_or_else(key_export_error)?;
+    let parent = fs::canonicalize(parent).map_err(|_| key_export_error())?;
+    let workspace_directory =
+        fs::canonicalize(workspace_directory).map_err(|_| key_export_error())?;
+    if parent.starts_with(workspace_directory) {
+        return Err(WorkspaceCommandError::new(
+            "workspace_key_export_inside_workspace",
+            "Choose a location outside the workspace so the key cannot be committed to Git.",
+        ));
+    }
+    if destination.exists() {
+        let metadata = fs::symlink_metadata(destination).map_err(|_| key_export_error())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(key_export_error());
+        }
+    }
+    Ok(())
+}
+
+fn write_private_key_export(
+    destination: &Path,
+    content: &[u8],
+) -> Result<(), WorkspaceCommandError> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        let mut file = options.open(destination).map_err(|_| key_export_error())?;
+        file.write_all(content).map_err(|_| key_export_error())?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| key_export_error())?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = options.open(destination).map_err(|_| key_export_error())?;
+        file.write_all(content).map_err(|_| key_export_error())?;
+    }
+    Ok(())
+}
+
+fn key_export_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "workspace_key_export_failed",
+        "The workspace encryption key could not be exported safely.",
+    )
+}
+
+fn key_import_error() -> WorkspaceCommandError {
+    WorkspaceCommandError::new(
+        "workspace_key_import_invalid",
+        "Choose a valid key export for this workspace.",
+    )
 }
 
 fn workspace_collections_read_error() -> WorkspaceCommandError {
@@ -1860,6 +2262,19 @@ mod tests {
         }
     }
 
+    fn read_test_collections(directory: &Path) -> Vec<WorkspaceCollection> {
+        let workspace_id = if directory.join(WORKSPACE_MANIFEST).is_file() {
+            serde_json::from_slice::<WorkspaceManifest>(
+                &fs::read(directory.join(WORKSPACE_MANIFEST)).unwrap(),
+            )
+            .unwrap()
+            .id
+        } else {
+            "test-workspace".to_owned()
+        };
+        read_workspace_collections(directory, &workspace_id).unwrap()
+    }
+
     #[test]
     fn creates_a_clean_committed_workspace_repository() {
         let directory = tempdir().expect("temporary directory");
@@ -1874,6 +2289,7 @@ mod tests {
                     method: "GET".to_owned(),
                     path: "https://example.com/todos/1".to_owned(),
                     body: String::new(),
+                    headers: Vec::new(),
                 }],
             }],
         })
@@ -1969,7 +2385,7 @@ mod tests {
         )
         .unwrap();
 
-        let collections = read_workspace_collections(directory.path()).expect("valid collections");
+        let collections = read_test_collections(directory.path());
         assert_eq!(collections[0].name, "First");
         assert_eq!(collections[1].name, "Second");
     }
@@ -1984,12 +2400,76 @@ mod tests {
                 method: "GET".to_owned(),
                 path: "{{baseUrl}}/todos/{{todoId}}".to_owned(),
                 body: String::new(),
+                headers: Vec::new(),
             }],
         }];
 
         assert!(validate_collections(&collections).is_ok());
         assert!(!is_http_url_or_template("{{baseUrl/todos"));
         assert!(!is_http_url_or_template("file://{{path}}"));
+    }
+
+    #[test]
+    fn serializes_header_names_but_never_plaintext_values() {
+        let key = WorkspaceKey::from_bytes(vec![11; 32]).unwrap();
+        let collection = WorkspaceCollection {
+            name: "Private API".to_owned(),
+            requests: vec![WorkspaceRequest {
+                id: "private-request".to_owned(),
+                name: "Private request".to_owned(),
+                method: "GET".to_owned(),
+                path: "https://example.com/private".to_owned(),
+                body: String::new(),
+                headers: vec![WorkspaceHeader {
+                    name: "Authorization".to_owned(),
+                    value: "Bearer private-token".to_owned(),
+                }],
+            }],
+        };
+
+        let stored = encrypt_collection_with_key("workspace-1", &collection, Some(&key)).unwrap();
+        let json = serde_json::to_string(&stored).unwrap();
+
+        assert!(json.contains("Authorization"));
+        assert!(json.contains("AES-256-GCM"));
+        assert!(!json.contains("private-token"));
+        let decrypted = decrypt_collection("workspace-1", stored, Some(&key)).unwrap();
+        assert_eq!(
+            decrypted.requests[0].headers[0].value,
+            "Bearer private-token"
+        );
+        assert!(
+            encrypt_collection_with_key("workspace-1", &collection, Some(&key))
+                .and_then(|stored| decrypt_collection("workspace-2", stored, Some(&key)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn keeps_key_exports_outside_workspaces_with_private_permissions() {
+        let workspace = tempdir().expect("workspace directory");
+        let export_directory = tempdir().expect("export directory");
+        let inside = workspace.path().join("workspace-key.json");
+        let outside = export_directory.path().join("workspace-key.json");
+
+        assert_eq!(
+            ensure_key_export_outside_workspace(&inside, workspace.path())
+                .unwrap_err()
+                .code,
+            "workspace_key_export_inside_workspace"
+        );
+        ensure_key_export_outside_workspace(&outside, workspace.path()).unwrap();
+        write_private_key_export(&outside, b"secret key export").unwrap();
+        assert_eq!(fs::read(&outside).unwrap(), b"secret key export");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
@@ -2060,6 +2540,7 @@ mod tests {
                     method: "GET".to_owned(),
                     path: "https://example.com/todos/1".to_owned(),
                     body: String::new(),
+                    headers: Vec::new(),
                 },
             },
         )
@@ -2082,6 +2563,7 @@ mod tests {
                     method: "GET".to_owned(),
                     path: "https://example.com/todos/2".to_owned(),
                     body: String::new(),
+                    headers: Vec::new(),
                 },
             },
         )
@@ -2133,6 +2615,7 @@ mod tests {
                     method: "GET".to_owned(),
                     path: "https://example.com/todos/1".to_owned(),
                     body: String::new(),
+                    headers: Vec::new(),
                 },
             },
         )
@@ -2157,6 +2640,7 @@ mod tests {
                     method: "GET".to_owned(),
                     path: "https://example.com/todos/1".to_owned(),
                     body: String::new(),
+                    headers: Vec::new(),
                 }],
             }],
         })
@@ -2179,7 +2663,7 @@ mod tests {
             renamed.workspace.git_state,
             WorkspaceGitState::Changes
         ));
-        let stored = read_workspace_collections(directory.path()).unwrap();
+        let stored = read_test_collections(directory.path());
         assert_eq!(stored[0].name, "Internal API");
     }
 
@@ -2211,7 +2695,7 @@ mod tests {
             result.workspace.git_state,
             WorkspaceGitState::Changes
         ));
-        let stored = read_workspace_collections(directory.path()).unwrap();
+        let stored = read_test_collections(directory.path());
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].name, "Empty API");
         assert!(stored[0].requests.is_empty());
@@ -2242,6 +2726,7 @@ mod tests {
                     method: "GET".to_owned(),
                     path: "https://example.com/todos/1".to_owned(),
                     body: String::new(),
+                    headers: Vec::new(),
                 }],
             }],
         })
@@ -2263,7 +2748,7 @@ mod tests {
             result.workspace.git_state,
             WorkspaceGitState::Changes
         ));
-        let stored = read_workspace_collections(directory.path()).unwrap();
+        let stored = read_test_collections(directory.path());
         assert_eq!(stored.len(), 1);
         assert!(stored[0].requests.is_empty());
 
@@ -2293,6 +2778,7 @@ mod tests {
                     method: "GET".to_owned(),
                     path: "https://example.com/todos/1".to_owned(),
                     body: String::new(),
+                    headers: Vec::new(),
                 }],
             }],
         })
@@ -2314,9 +2800,7 @@ mod tests {
             WorkspaceGitState::Changes
         ));
         assert!(directory.path().join("collections/.gitkeep").is_file());
-        assert!(read_workspace_collections(directory.path())
-            .unwrap()
-            .is_empty());
+        assert!(read_test_collections(directory.path()).is_empty());
     }
 
     #[test]

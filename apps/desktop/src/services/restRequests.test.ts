@@ -26,6 +26,7 @@ describe("REST request service", () => {
     await sendRestRequest({
       method: "GET",
       url: " https://example.com/todos/1 ",
+      headers: [],
       body: "ignored",
     });
 
@@ -42,6 +43,7 @@ describe("REST request service", () => {
     await sendRestRequest({
       method: "POST",
       url: "https://example.com/posts",
+      headers: [],
       body: '{ "title": "GetRest" }',
     });
 
@@ -54,14 +56,44 @@ describe("REST request service", () => {
     });
   });
 
+  it("normalizes custom headers and preserves an explicit content type", async () => {
+    await sendRestRequest({
+      method: "POST",
+      url: "https://example.com/posts",
+      headers: [
+        { name: " X-Client ", value: " GetRest " },
+        { name: "Content-Type", value: "text/plain" },
+        { name: "   ", value: "ignored" },
+      ],
+      body: "hello",
+    });
+
+    expect(invokeRestRequestMock).toHaveBeenCalledWith({
+      method: "POST",
+      url: "https://example.com/posts",
+      headers: [
+        { name: "X-Client", value: "GetRest" },
+        { name: "Content-Type", value: "text/plain" },
+      ],
+      body: "hello",
+      variables: [],
+    });
+  });
+
   it("rejects invalid and unsupported URLs before invoking Tauri", async () => {
     await expect(
-      sendRestRequest({ method: "GET", url: "not a url", body: "" }),
+      sendRestRequest({
+        method: "GET",
+        url: "not a url",
+        headers: [],
+        body: "",
+      }),
     ).rejects.toThrow("Enter a valid request URL.");
     await expect(
       sendRestRequest({
         method: "GET",
         url: "file:///tmp/request.json",
+        headers: [],
         body: "",
       }),
     ).rejects.toThrow("Only HTTP and HTTPS request URLs are supported.");
@@ -73,6 +105,7 @@ describe("REST request service", () => {
     await sendRestRequest({
       method: "POST",
       url: "{{baseUrl}}/posts/{{postId}}",
+      headers: [],
       body: '{"id":"{{postId}}"}',
       variables: [
         { name: "baseUrl", value: "https://example.com" },

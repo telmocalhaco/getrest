@@ -1,5 +1,6 @@
 mod rest;
 mod runner;
+mod secrets;
 mod workspace;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,6 +11,8 @@ pub fn run() {
             rest::send_rest_request,
             runner::run_collection,
             workspace::choose_workspace_directory,
+            workspace::export_workspace_key,
+            workspace::import_workspace_key,
             workspace::create_workspace,
             workspace::get_active_workspace,
             workspace::list_workspaces,

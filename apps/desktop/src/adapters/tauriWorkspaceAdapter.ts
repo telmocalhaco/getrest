@@ -32,6 +32,18 @@ export async function invokeChooseWorkspaceDirectory(): Promise<string | null> {
   return invokeCommand<string | null>("choose_workspace_directory");
 }
 
+export async function invokeExportWorkspaceKey(
+  workspaceId: string,
+): Promise<string | null> {
+  return invokeCommand<string | null>("export_workspace_key", { workspaceId });
+}
+
+export async function invokeImportWorkspaceKey(
+  workspaceId: string,
+): Promise<boolean> {
+  return invokeCommand<boolean>("import_workspace_key", { workspaceId });
+}
+
 export async function invokeCreateWorkspace(
   input: CreateWorkspaceInput,
 ): Promise<WorkspaceSummary> {
