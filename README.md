@@ -99,6 +99,9 @@ authoritative.
 The setup scripts install and validate the platform dependencies:
 
 ```bash
+# Arch Linux and derivatives (including Omarchy)
+bash scripts/setup/arch.sh
+
 # macOS
 bash scripts/setup/macos.sh
 
