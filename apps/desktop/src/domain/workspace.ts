@@ -1,4 +1,12 @@
 import type { RestHeader } from "./rest";
+import type { WorkspaceEnvironment } from "./environment";
+import type {
+  ImportedCollection,
+  ImportedEnvironment,
+  ImportSourceFile,
+} from "@getrest/formats";
+
+export type { ImportSourceFile };
 
 export type WorkspaceGitState =
   "localOnly" | "clean" | "changes" | "unavailable";
@@ -79,4 +87,19 @@ export interface DeleteWorkspaceCollectionInput {
 export interface WorkspaceCollectionsMutationResult {
   workspace: WorkspaceSummary;
   collections: WorkspaceCollection[];
+}
+
+export interface ImportWorkspaceDataInput {
+  workspaceId: string;
+  collections: ImportedCollection[];
+  environments: ImportedEnvironment[];
+}
+
+export interface ImportWorkspaceDataResult {
+  workspace: WorkspaceSummary;
+  collections: WorkspaceCollection[];
+  environments: WorkspaceEnvironment[];
+  importedCollections: number;
+  importedEnvironments: number;
+  importedRequests: number;
 }

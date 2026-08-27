@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "packageManager": "npm@11.16.0",
   "workspaces": [
-    "apps/desktop"
+    "apps/desktop",
+    "packages/formats"
   ],
   "engines": {
     "node": "24.18.0",
@@ -13,10 +14,10 @@
   "scripts": {
     "dev": "npm --workspace @getrest/desktop run dev",
     "build": "npm --workspace @getrest/desktop run build",
-    "test": "npm --workspace @getrest/desktop run test",
+    "test": "npm --workspaces --if-present run test",
     "typecheck": "npm --workspace @getrest/desktop run typecheck",
-    "format": "prettier --write package.json apps/desktop",
-    "format:check": "prettier --check package.json apps/desktop",
+    "format": "prettier --write package.json apps/desktop packages/formats",
+    "format:check": "prettier --check package.json apps/desktop packages/formats",
     "tauri": "npm --workspace @getrest/desktop run tauri --"
   }
 }

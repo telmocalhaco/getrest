@@ -25,6 +25,9 @@ const RENAME_COMMIT_MESSAGE: &str = "chore: rename GetRest workspace";
 const MAX_COLLECTION_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_ENVIRONMENT_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_KEY_EXPORT_BYTES: u64 = 16 * 1024;
+const MAX_IMPORT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_IMPORT_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_IMPORT_FILES: usize = 50;
 const KEY_EXPORT_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +102,41 @@ pub struct SaveWorkspaceEnvironmentInput {
 pub struct DeleteWorkspaceEnvironmentInput {
     workspace_id: String,
     environment_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportWorkspaceDataInput {
+    workspace_id: String,
+    #[serde(default)]
+    collections: Vec<ImportedWorkspaceCollection>,
+    #[serde(default)]
+    environments: Vec<ImportedWorkspaceEnvironment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportedWorkspaceCollection {
+    name: String,
+    requests: Vec<ImportedWorkspaceRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportedWorkspaceRequest {
+    name: String,
+    method: String,
+    path: String,
+    body: String,
+    #[serde(default)]
+    headers: Vec<WorkspaceHeader>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportedWorkspaceEnvironment {
+    name: String,
+    variables: Vec<WorkspaceEnvironmentVariable>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,6 +256,24 @@ pub struct WorkspaceEnvironmentMutationResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportSourceFile {
+    name: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportWorkspaceDataResult {
+    workspace: WorkspaceSummary,
+    collections: Vec<WorkspaceCollection>,
+    environments: Vec<WorkspaceEnvironment>,
+    imported_collections: usize,
+    imported_environments: usize,
+    imported_requests: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceSummary {
     id: String,
     name: String,
@@ -297,6 +353,66 @@ pub async fn choose_workspace_directory(
         WorkspaceCommandError::new(
             "folder_dialog_failed",
             "The workspace folder dialog stopped unexpectedly.",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn choose_import_files(
+    app: AppHandle,
+) -> Result<Vec<ImportSourceFile>, WorkspaceCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = app
+            .dialog()
+            .file()
+            .set_title("Import Postman, Hoppscotch, or Yaak data")
+            .add_filter("JSON exports", &["json"])
+            .blocking_pick_files()
+            .unwrap_or_default();
+        if paths.len() > MAX_IMPORT_FILES {
+            return Err(import_file_error(
+                "Choose no more than 50 export files at once.",
+            ));
+        }
+        let mut total_bytes = 0u64;
+        paths
+            .into_iter()
+            .map(|path| {
+                let path = path.into_path().map_err(|_| {
+                    import_file_error("One of the selected file paths is not supported.")
+                })?;
+                let metadata = fs::symlink_metadata(&path)
+                    .map_err(|_| import_file_error("A selected export could not be inspected."))?;
+                if !metadata.is_file()
+                    || metadata.file_type().is_symlink()
+                    || metadata.len() > MAX_IMPORT_FILE_BYTES
+                {
+                    return Err(import_file_error(
+                        "Each export must be a regular JSON file no larger than 10 MB.",
+                    ));
+                }
+                total_bytes = total_bytes.saturating_add(metadata.len());
+                if total_bytes > MAX_IMPORT_TOTAL_BYTES {
+                    return Err(import_file_error(
+                        "The selected exports exceed the combined 50 MB import limit.",
+                    ));
+                }
+                let name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| import_file_error("A selected file name is not supported."))?
+                    .to_owned();
+                let content = fs::read_to_string(path)
+                    .map_err(|_| import_file_error("A selected export is not valid UTF-8 text."))?;
+                Ok(ImportSourceFile { name, content })
+            })
+            .collect()
+    })
+    .await
+    .map_err(|_| {
+        WorkspaceCommandError::new(
+            "workspace_import_failed",
+            "The import file selection stopped unexpectedly.",
         )
     })?
 }
@@ -687,6 +803,22 @@ pub async fn delete_workspace_environment(
             "The environment delete operation stopped unexpectedly.",
         )
     })?
+}
+
+#[tauri::command]
+pub async fn import_workspace_data(
+    app: AppHandle,
+    input: ImportWorkspaceDataInput,
+) -> Result<ImportWorkspaceDataResult, WorkspaceCommandError> {
+    let app_data_dir = application_data_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || import_data_into_workspace(&app_data_dir, input))
+        .await
+        .map_err(|_| {
+            WorkspaceCommandError::new(
+                "workspace_import_failed",
+                "The workspace import stopped unexpectedly.",
+            )
+        })?
 }
 
 fn create_workspace_repository(
@@ -1507,6 +1639,144 @@ fn collections_mutation_result(
         workspace: updated_workspace,
         collections,
     })
+}
+
+fn import_data_into_workspace(
+    app_data_dir: &Path,
+    input: ImportWorkspaceDataInput,
+) -> Result<ImportWorkspaceDataResult, WorkspaceCommandError> {
+    if input.collections.is_empty() && input.environments.is_empty() {
+        return Err(import_file_error(
+            "The selected exports do not contain importable data.",
+        ));
+    }
+    let workspace = load_workspace_by_id(app_data_dir, input.workspace_id.trim())?;
+    let directory = Path::new(&workspace.path);
+    verify_workspace_identity(directory, &workspace.id)?;
+
+    let original_collections = read_workspace_collections(directory, &workspace.id)?;
+    let original_environments = read_workspace_environments(directory)?;
+    let imported_collection_count = input.collections.len();
+    let imported_environment_count = input.environments.len();
+    let imported_request_count = input
+        .collections
+        .iter()
+        .map(|collection| collection.requests.len())
+        .sum();
+
+    let mut collections = original_collections.clone();
+    let mut collection_names = collections
+        .iter()
+        .map(|collection| collection.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    for imported in input.collections {
+        let name = unique_import_name(&imported.name, &mut collection_names)?;
+        let requests = imported
+            .requests
+            .into_iter()
+            .map(|request| {
+                Ok(WorkspaceRequest {
+                    id: Uuid::new_v4().to_string(),
+                    name: bounded_import_text(&request.name, 200, "request")?,
+                    method: request.method.trim().to_uppercase(),
+                    path: request.path.trim().to_owned(),
+                    body: request.body,
+                    headers: request.headers,
+                })
+            })
+            .collect::<Result<Vec<_>, WorkspaceCommandError>>()?;
+        collections.push(WorkspaceCollection { name, requests });
+    }
+
+    let mut environments = original_environments.clone();
+    let mut environment_names = environments
+        .iter()
+        .map(|environment| environment.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    for imported in input.environments {
+        environments.push(WorkspaceEnvironment {
+            id: Uuid::new_v4().to_string(),
+            name: unique_import_name(&imported.name, &mut environment_names)?,
+            variables: imported.variables,
+        });
+    }
+
+    validate_collections(&collections)?;
+    validate_environments(&environments)?;
+    if imported_collection_count > 0 {
+        replace_workspace_collections(directory, &workspace.id, &collections)?;
+    }
+    if imported_environment_count > 0 {
+        if let Err(error) = replace_workspace_environments(directory, &environments) {
+            if imported_collection_count > 0 {
+                let _ =
+                    replace_workspace_collections(directory, &workspace.id, &original_collections);
+            }
+            return Err(error);
+        }
+    }
+
+    environments.sort_by_key(|item| item.name.to_lowercase());
+    let updated_workspace = inspect_stored_workspace(workspace.id, workspace.name, workspace.path);
+    remember_workspace(app_data_dir, &updated_workspace)?;
+    Ok(ImportWorkspaceDataResult {
+        workspace: updated_workspace,
+        collections,
+        environments,
+        imported_collections: imported_collection_count,
+        imported_environments: imported_environment_count,
+        imported_requests: imported_request_count,
+    })
+}
+
+fn unique_import_name(
+    value: &str,
+    existing: &mut HashSet<String>,
+) -> Result<String, WorkspaceCommandError> {
+    let raw_base = value.trim();
+    if raw_base.is_empty() || raw_base.chars().any(char::is_control) {
+        return Err(import_file_error(
+            "An imported collection or environment has an invalid name.",
+        ));
+    }
+    let base = raw_base.chars().take(100).collect::<String>();
+    if existing.insert(base.to_lowercase()) {
+        return Ok(base);
+    }
+    for index in 1..=999 {
+        let suffix = if index == 1 {
+            " (Imported)".to_owned()
+        } else {
+            format!(" (Imported {index})")
+        };
+        let maximum_base_chars = 100usize.saturating_sub(suffix.chars().count());
+        let shortened = base.chars().take(maximum_base_chars).collect::<String>();
+        let candidate = format!("{shortened}{suffix}");
+        if existing.insert(candidate.to_lowercase()) {
+            return Ok(candidate);
+        }
+    }
+    Err(import_file_error(
+        "An imported name conflicts with too many existing items.",
+    ))
+}
+
+fn bounded_import_text(
+    value: &str,
+    maximum_chars: usize,
+    field: &str,
+) -> Result<String, WorkspaceCommandError> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(import_file_error(format!(
+            "An imported {field} has an invalid name."
+        )));
+    }
+    Ok(value.chars().take(maximum_chars).collect())
+}
+
+fn import_file_error(message: impl Into<String>) -> WorkspaceCommandError {
+    WorkspaceCommandError::new("workspace_import_invalid", message)
 }
 
 fn save_environment_to_workspace(
@@ -2909,5 +3179,53 @@ mod tests {
             },
         ];
         assert!(validate_environments(&duplicate_names).is_err());
+    }
+
+    #[test]
+    fn imports_collections_and_environments_without_overwriting_existing_names() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: vec![WorkspaceCollection {
+                name: "Orders".to_owned(),
+                requests: Vec::new(),
+            }],
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).expect("workspace should be registered");
+
+        let imported = import_data_into_workspace(
+            app_data.path(),
+            ImportWorkspaceDataInput {
+                workspace_id: created.id,
+                collections: vec![ImportedWorkspaceCollection {
+                    name: "Orders".to_owned(),
+                    requests: vec![ImportedWorkspaceRequest {
+                        name: "List orders".to_owned(),
+                        method: "get".to_owned(),
+                        path: "{{baseUrl}}/orders".to_owned(),
+                        body: String::new(),
+                        headers: Vec::new(),
+                    }],
+                }],
+                environments: vec![ImportedWorkspaceEnvironment {
+                    name: "Production".to_owned(),
+                    variables: vec![WorkspaceEnvironmentVariable {
+                        name: "baseUrl".to_owned(),
+                        value: "https://example.com".to_owned(),
+                    }],
+                }],
+            },
+        )
+        .expect("data should be imported");
+
+        assert_eq!(imported.imported_collections, 1);
+        assert_eq!(imported.imported_requests, 1);
+        assert_eq!(imported.imported_environments, 1);
+        assert_eq!(imported.collections[1].name, "Orders (Imported)");
+        assert_eq!(imported.collections[1].requests[0].method, "GET");
+        assert_eq!(imported.environments[0].name, "Production");
     }
 }

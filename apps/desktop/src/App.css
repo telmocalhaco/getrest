@@ -320,6 +320,13 @@ kbd {
   padding: 9px 8px 3px;
   overflow: auto;
 }
+
+.collection-import-status {
+  margin: 0 12px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
 .collection {
   margin-bottom: 7px;
 }

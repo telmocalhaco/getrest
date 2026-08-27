@@ -4,6 +4,9 @@ import type {
   CreateWorkspaceCollectionInput,
   DeleteWorkspaceCollectionInput,
   DeleteWorkspaceRequestInput,
+  ImportSourceFile,
+  ImportWorkspaceDataInput,
+  ImportWorkspaceDataResult,
   RenameWorkspaceInput,
   RenameWorkspaceCollectionInput,
   SaveWorkspaceRequestInput,
@@ -30,6 +33,18 @@ export class WorkspaceCommandError extends Error {
 
 export async function invokeChooseWorkspaceDirectory(): Promise<string | null> {
   return invokeCommand<string | null>("choose_workspace_directory");
+}
+
+export async function invokeChooseImportFiles(): Promise<ImportSourceFile[]> {
+  return invokeCommand<ImportSourceFile[]>("choose_import_files");
+}
+
+export async function invokeImportWorkspaceData(
+  input: ImportWorkspaceDataInput,
+): Promise<ImportWorkspaceDataResult> {
+  return invokeCommand<ImportWorkspaceDataResult>("import_workspace_data", {
+    input,
+  });
 }
 
 export async function invokeExportWorkspaceKey(

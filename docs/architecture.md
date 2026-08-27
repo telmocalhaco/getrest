@@ -261,7 +261,15 @@ with controlled arguments and never through an arbitrary shell interface.
 
 ## Import and export
 
-`packages/formats` owns parsing and generation for external formats such as OpenAPI, cURL, Postman, and Insomnia. Importers treat all input as untrusted and produce a validated intermediate model before persistence.
+`packages/formats` owns parsing and generation for external formats. The first
+implemented adapters accept Postman, Hoppscotch, and Yaak JSON exports.
+Importers treat all input as untrusted and produce a validated intermediate
+model before native persistence. The native layer selects and reads regular
+files with explicit count and size limits, validates the converted model again,
+and writes collections and environments using staged directory replacement.
+Imported headers follow the workspace encryption path. Environment variables
+marked as secret by their source are omitted because versioned environment
+files may contain only non-secret values.
 
 Format conversion must preserve source information when possible and report unsupported or lossy fields instead of silently discarding them.
 

@@ -1,4 +1,5 @@
 import {
+  invokeChooseImportFiles,
   invokeChooseWorkspaceDirectory,
   invokeCreateWorkspaceCollection,
   invokeDeleteWorkspaceCollection,
@@ -8,6 +9,7 @@ import {
   invokeGetActiveWorkspace,
   invokeExportWorkspaceKey,
   invokeImportWorkspaceKey,
+  invokeImportWorkspaceData,
   invokeListWorkspaces,
   invokeLoadWorkspaceCollections,
   invokeRenameWorkspace,
@@ -15,6 +17,7 @@ import {
   invokeSaveWorkspaceRequest,
   WorkspaceCommandError,
 } from "../adapters/tauriWorkspaceAdapter";
+import { parseImportFiles } from "@getrest/formats";
 import type {
   GitAuthor,
   WorkspaceCollection,
@@ -48,6 +51,37 @@ export async function importWorkspaceKey(
 ): Promise<boolean> {
   const id = requireWorkspaceId(workspaceId);
   return runWorkspaceOperation(() => invokeImportWorkspaceKey(id));
+}
+
+export async function importWorkspaceData(workspaceId: string) {
+  const id = requireWorkspaceId(workspaceId);
+  const files = await runWorkspaceOperation(() => invokeChooseImportFiles());
+  if (files.length === 0) return null;
+  let parsed;
+  try {
+    parsed = parseImportFiles(files);
+  } catch (error) {
+    throw new WorkspaceServiceError(
+      "workspace_import_invalid",
+      error instanceof Error
+        ? error.message
+        : "The selected exports are invalid.",
+    );
+  }
+  const result = await runWorkspaceOperation(() =>
+    invokeImportWorkspaceData({
+      workspaceId: id,
+      collections: parsed.collections,
+      environments: parsed.environments,
+    }),
+  );
+  return {
+    ...result,
+    skippedRequests: parsed.skippedRequests,
+    skippedVariables: parsed.skippedVariables,
+    skippedSecretVariables: parsed.skippedSecretVariables,
+    omittedFields: parsed.omittedFields,
+  };
 }
 
 export async function createWorkspace(

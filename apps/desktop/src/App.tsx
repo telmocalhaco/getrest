@@ -37,6 +37,7 @@ import {
   selectWorkspaceDirectory,
   exportWorkspaceKey,
   importWorkspaceKey,
+  importWorkspaceData,
   WorkspaceServiceError,
 } from "./services/workspaces";
 
@@ -409,6 +410,8 @@ function App() {
   const [isRenamingCollection, setIsRenamingCollection] = useState(false);
   const [requestMenuOpen, setRequestMenuOpen] = useState(false);
   const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
   const [runnerDialogOpen, setRunnerDialogOpen] = useState(false);
   const [runnerCollection, setRunnerCollection] = useState("");
   const [collectionDialogPurpose, setCollectionDialogPurpose] = useState<
@@ -921,6 +924,47 @@ function App() {
     setRenameCollectionDialogOpen(true);
   };
 
+  const importExternalData = async () => {
+    if (!workspace || isImporting) return;
+    setCollectionMenuOpen(false);
+    setIsImporting(true);
+    setImportStatus(null);
+    try {
+      const result = await importWorkspaceData(workspace.id);
+      if (!result) return;
+      setWorkspace(result.workspace);
+      applyCollections(result.collections);
+      applyEnvironments(result.environments);
+      const skipped = [
+        result.skippedRequests
+          ? `${result.skippedRequests} unsupported request(s) skipped`
+          : null,
+        result.skippedVariables
+          ? `${result.skippedVariables} invalid variable(s) skipped`
+          : null,
+        result.skippedSecretVariables
+          ? `${result.skippedSecretVariables} secret value(s) omitted`
+          : null,
+        result.omittedFields
+          ? `${result.omittedFields} unsupported field(s) omitted`
+          : null,
+      ].filter(Boolean);
+      setImportStatus(
+        `Imported ${result.importedCollections} collection(s), ${result.importedRequests} request(s), and ${result.importedEnvironments} environment(s)${
+          skipped.length ? `. ${skipped.join("; ")}.` : "."
+        }`,
+      );
+    } catch (error) {
+      setImportStatus(
+        error instanceof Error
+          ? error.message
+          : "The data could not be imported.",
+      );
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   const openDeleteCollectionDialog = () => {
     if (!workspace || collections.length === 0) return;
     setCollectionMenuOpen(false);
@@ -1358,7 +1402,7 @@ function App() {
               aria-haspopup="menu"
               aria-label="Collection options"
               className="icon-button compact"
-              disabled={collections.length === 0}
+              disabled={!workspace}
               onClick={() => setCollectionMenuOpen((open) => !open)}
               type="button"
             >
@@ -1379,6 +1423,20 @@ function App() {
                   <span>
                     <strong>New collection</strong>
                     <small>Create an empty collection</small>
+                  </span>
+                </button>
+                <button
+                  disabled={isImporting}
+                  onClick={importExternalData}
+                  role="menuitem"
+                  type="button"
+                >
+                  <Icon name="folder" size={15} />
+                  <span>
+                    <strong>
+                      {isImporting ? "Importing…" : "Import data"}
+                    </strong>
+                    <small>Postman, Hoppscotch, or Yaak JSON</small>
                   </span>
                 </button>
                 <button
@@ -1422,6 +1480,11 @@ function App() {
             )}
           </div>
         </div>
+        {importStatus && (
+          <p aria-live="polite" className="collection-import-status">
+            {importStatus}
+          </p>
+        )}
         <nav aria-label="Request collections" className="collections">
           {collections.map((collection) => {
             const collectionRequests = visibleRequests.filter(

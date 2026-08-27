@@ -28,6 +28,7 @@ const workspaceMocks = vi.hoisted(() => {
     exportKey: vi.fn(),
     getActive: vi.fn(),
     importKey: vi.fn(),
+    importData: vi.fn(),
     list: vi.fn(),
     loadCollections: vi.fn(),
     rename: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock("./services/workspaces", () => ({
   exportWorkspaceKey: workspaceMocks.exportKey,
   getActiveWorkspace: workspaceMocks.getActive,
   importWorkspaceKey: workspaceMocks.importKey,
+  importWorkspaceData: workspaceMocks.importData,
   listWorkspaces: workspaceMocks.list,
   loadWorkspaceCollections: workspaceMocks.loadCollections,
   renameWorkspace: workspaceMocks.rename,
@@ -78,6 +80,7 @@ describe("GetRest desktop shell", () => {
     workspaceMocks.exportKey.mockReset();
     workspaceMocks.getActive.mockReset();
     workspaceMocks.importKey.mockReset();
+    workspaceMocks.importData.mockReset();
     workspaceMocks.list.mockReset();
     workspaceMocks.loadCollections.mockReset();
     workspaceMocks.rename.mockReset();
@@ -87,6 +90,7 @@ describe("GetRest desktop shell", () => {
     workspaceMocks.getActive.mockResolvedValue(null);
     workspaceMocks.exportKey.mockResolvedValue(null);
     workspaceMocks.importKey.mockResolvedValue(false);
+    workspaceMocks.importData.mockResolvedValue(null);
     workspaceMocks.list.mockResolvedValue([]);
     workspaceMocks.loadCollections.mockResolvedValue([]);
     environmentMocks.load.mockResolvedValue([]);
@@ -1027,6 +1031,62 @@ describe("GetRest desktop shell", () => {
     expect(
       screen.getByRole("dialog", { name: "Create workspace" }),
     ).toBeInTheDocument();
+  });
+
+  it("imports external collections and environments into an empty workspace", async () => {
+    const activeWorkspace = {
+      id: "workspace-1",
+      name: "Imported workspace",
+      path: "/tmp/imported-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    workspaceMocks.getActive.mockResolvedValue(activeWorkspace);
+    workspaceMocks.importData.mockResolvedValue({
+      workspace: { ...activeWorkspace, gitState: "changes" as const },
+      collections: [
+        {
+          name: "Orders",
+          requests: [
+            {
+              id: "request-1",
+              name: "List orders",
+              method: "GET",
+              path: "https://example.com/orders",
+              body: "",
+              headers: [],
+            },
+          ],
+        },
+      ],
+      environments: [
+        {
+          id: "environment-1",
+          name: "Production",
+          variables: [{ name: "baseUrl", value: "https://example.com" }],
+        },
+      ],
+      importedCollections: 1,
+      importedRequests: 1,
+      importedEnvironments: 1,
+      skippedRequests: 0,
+      skippedVariables: 0,
+      skippedSecretVariables: 1,
+      omittedFields: 0,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Collection options" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: /Import data/ }));
+
+    expect(workspaceMocks.importData).toHaveBeenCalledWith("workspace-1");
+    expect((await screen.findAllByText("List orders")).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.getByText(/1 secret value\(s\) omitted/)).toBeInTheDocument();
   });
 
   it("exports and imports the active workspace encryption key", async () => {

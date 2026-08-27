@@ -39,6 +39,13 @@ Resolution is intentionally single-pass. Environment files must never contain
 passwords, tokens, API keys, or other secrets; protected variables will use the
 operating system credential store in a later implementation.
 
+The collection options menu can import one or more JSON exports from Postman,
+Hoppscotch, or Yaak into the active workspace. Existing collections and
+environments are retained; conflicting imported names receive an `Imported`
+suffix. Imported request headers use the workspace encryption key, while
+variables explicitly marked as secret by the source application are omitted
+and reported because workspace environment files are versioned plaintext.
+
 The collection options menu also opens a native collection runner. Requests can
 be reordered into a flow, and JSON response values can be extracted by dotted
 paths into variables used by later steps. Functional mode runs the flow once;

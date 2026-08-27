@@ -11,6 +11,7 @@ pub fn run() {
             rest::send_rest_request,
             runner::run_collection,
             workspace::choose_workspace_directory,
+            workspace::choose_import_files,
             workspace::export_workspace_key,
             workspace::import_workspace_key,
             workspace::create_workspace,
@@ -26,7 +27,8 @@ pub fn run() {
             workspace::delete_workspace_collection,
             workspace::load_workspace_environments,
             workspace::save_workspace_environment,
-            workspace::delete_workspace_environment
+            workspace::delete_workspace_environment,
+            workspace::import_workspace_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
