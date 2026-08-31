@@ -53,7 +53,10 @@ export async function importWorkspaceKey(
   return runWorkspaceOperation(() => invokeImportWorkspaceKey(id));
 }
 
-export async function importWorkspaceData(workspaceId: string) {
+export async function importWorkspaceData(
+  workspaceId: string,
+  scope: "all" | "environments" = "all",
+) {
   const id = requireWorkspaceId(workspaceId);
   const files = await runWorkspaceOperation(() => invokeChooseImportFiles());
   if (files.length === 0) return null;
@@ -68,19 +71,25 @@ export async function importWorkspaceData(workspaceId: string) {
         : "The selected exports are invalid.",
     );
   }
+  if (scope === "environments" && parsed.environments.length === 0) {
+    throw new WorkspaceServiceError(
+      "workspace_import_invalid",
+      "The selected exports do not contain environments. Choose an environment export from Postman, Hoppscotch, or Yaak.",
+    );
+  }
   const result = await runWorkspaceOperation(() =>
     invokeImportWorkspaceData({
       workspaceId: id,
-      collections: parsed.collections,
+      collections: scope === "environments" ? [] : parsed.collections,
       environments: parsed.environments,
     }),
   );
   return {
     ...result,
-    skippedRequests: parsed.skippedRequests,
+    skippedRequests: scope === "environments" ? 0 : parsed.skippedRequests,
     skippedVariables: parsed.skippedVariables,
     skippedSecretVariables: parsed.skippedSecretVariables,
-    omittedFields: parsed.omittedFields,
+    omittedFields: scope === "environments" ? 0 : parsed.omittedFields,
   };
 }
 

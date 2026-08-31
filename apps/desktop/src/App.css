@@ -1407,6 +1407,19 @@ kbd {
   display: grid;
   gap: 7px;
 }
+.environment-import {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.environment-import .secondary-button {
+  flex-shrink: 0;
+}
+.environment-import span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .environment-variables-heading,
 .environment-variable-row {
   display: grid;

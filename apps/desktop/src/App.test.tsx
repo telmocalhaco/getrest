@@ -405,7 +405,157 @@ describe("GetRest desktop shell", () => {
     expect(await screen.findByLabelText("Active environment")).toHaveValue(
       "environment-1",
     );
+    expect(
+      screen.queryByRole("dialog", { name: "Environments" }),
+    ).not.toBeInTheDocument();
   });
+
+  it("keeps the environment dialog and draft open when saving fails", async () => {
+    workspaceMocks.getActive.mockResolvedValue({
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "clean",
+      hasRemote: false,
+    });
+    environmentMocks.load.mockResolvedValue([
+      {
+        id: "environment-1",
+        name: "Local",
+        variables: [{ name: "baseUrl", value: "https://example.com" }],
+      },
+    ]);
+    environmentMocks.save.mockRejectedValue(
+      new Error("The environment could not be saved."),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("button", { name: "Demo workspace" });
+    await user.click(
+      screen.getByRole("button", { name: "Manage environments" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Environments" });
+    await user.clear(within(dialog).getByLabelText("Environment name"));
+    await user.type(
+      within(dialog).getByLabelText("Environment name"),
+      "Edited environment",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save environment" }),
+    );
+    expect(
+      within(dialog).getByText("The environment could not be saved."),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Environment name")).toHaveValue(
+      "Edited environment",
+    );
+    expect(within(dialog).getByLabelText("Variable value 1")).toHaveValue(
+      "https://example.com",
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "Save environment" }),
+    ).toBeEnabled();
+  });
+
+  it("imports and selects an environment from the management dialog without resetting request edits", async () => {
+    const workspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo",
+      gitState: "clean",
+      hasRemote: false,
+    };
+    const existing = { id: "env-old", name: "Existing", variables: [] };
+    const imported = {
+      id: "env-new",
+      name: "Imported",
+      variables: [{ name: "baseUrl", value: "https://example.com" }],
+    };
+    workspaceMocks.getActive.mockResolvedValue(workspace);
+    environmentMocks.load.mockResolvedValue([existing]);
+    workspaceMocks.importData.mockResolvedValue({
+      workspace,
+      collections: [],
+      environments: [existing, imported],
+      importedCollections: 0,
+      importedRequests: 0,
+      importedEnvironments: 1,
+      skippedRequests: 0,
+      skippedVariables: 0,
+      skippedSecretVariables: 1,
+      omittedFields: 0,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("button", { name: "Demo workspace" });
+    const url = screen.getByRole("textbox", { name: "Request URL" });
+    await user.clear(url);
+    await user.type(url, "https://example.com/unsaved");
+    await user.click(
+      screen.getByRole("button", { name: "Manage environments" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Environments" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Import environments" }),
+    );
+    expect(workspaceMocks.importData).toHaveBeenCalledWith(
+      "workspace-1",
+      "environments",
+    );
+    expect(within(dialog).getByLabelText("Environment name")).toHaveValue(
+      "Imported",
+    );
+    expect(within(dialog).getByLabelText("Variable value 1")).toHaveValue(
+      "https://example.com",
+    );
+    expect(screen.getByLabelText("Active environment")).toHaveValue("env-new");
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "Imported 1 environment(s). 1 secret value(s) omitted.",
+    );
+    expect(url).toHaveValue("https://example.com/unsaved");
+    expect(environmentMocks.save).not.toHaveBeenCalled();
+  });
+
+  it.each(["cancel", "error"])(
+    "preserves the environment draft on import %s",
+    async (outcome) => {
+      workspaceMocks.getActive.mockResolvedValue({
+        id: "workspace-1",
+        name: "Demo workspace",
+        path: "/tmp/demo",
+        gitState: "clean",
+        hasRemote: false,
+      });
+      if (outcome === "error")
+        workspaceMocks.importData.mockRejectedValue(
+          new Error("No environments in this file."),
+        );
+      const user = userEvent.setup();
+      render(<App />);
+      await screen.findByRole("button", { name: "Demo workspace" });
+      await user.click(
+        screen.getByRole("button", { name: "Manage environments" }),
+      );
+      const dialog = screen.getByRole("dialog", { name: "Environments" });
+      await user.type(
+        within(dialog).getByLabelText("Environment name"),
+        "Unsaved draft",
+      );
+      await user.click(
+        within(dialog).getByRole("button", { name: "Import environments" }),
+      );
+      expect(within(dialog).getByLabelText("Environment name")).toHaveValue(
+        "Unsaved draft",
+      );
+      expect(
+        within(dialog).getByRole("button", { name: "Import environments" }),
+      ).toBeEnabled();
+      if (outcome === "error")
+        expect(
+          within(dialog).getByText("No environments in this file."),
+        ).toBeInTheDocument();
+    },
+  );
 
   it("switches between request detail tabs", async () => {
     const user = userEvent.setup();
@@ -1082,7 +1232,10 @@ describe("GetRest desktop shell", () => {
     );
     await user.click(screen.getByRole("menuitem", { name: /Import data/ }));
 
-    expect(workspaceMocks.importData).toHaveBeenCalledWith("workspace-1");
+    expect(workspaceMocks.importData).toHaveBeenCalledWith(
+      "workspace-1",
+      "all",
+    );
     expect((await screen.findAllByText("List orders")).length).toBeGreaterThan(
       0,
     );

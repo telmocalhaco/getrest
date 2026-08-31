@@ -924,17 +924,24 @@ function App() {
     setRenameCollectionDialogOpen(true);
   };
 
-  const importExternalData = async () => {
+  const importExternalData = async (scope: "all" | "environments" = "all") => {
     if (!workspace || isImporting) return;
     setCollectionMenuOpen(false);
     setIsImporting(true);
     setImportStatus(null);
+    if (scope === "environments") setEnvironmentError(null);
     try {
-      const result = await importWorkspaceData(workspace.id);
+      const result = await importWorkspaceData(workspace.id, scope);
       if (!result) return;
       setWorkspace(result.workspace);
-      applyCollections(result.collections);
-      applyEnvironments(result.environments);
+      if (result.importedCollections > 0) applyCollections(result.collections);
+      const importedEnvironment = result.environments.find(
+        (environment) => !environments.some(({ id }) => id === environment.id),
+      );
+      applyEnvironments(result.environments, importedEnvironment?.id);
+      if (scope === "environments" && importedEnvironment) {
+        loadEnvironmentDraft(importedEnvironment);
+      }
       const skipped = [
         result.skippedRequests
           ? `${result.skippedRequests} unsupported request(s) skipped`
@@ -949,13 +956,17 @@ function App() {
           ? `${result.omittedFields} unsupported field(s) omitted`
           : null,
       ].filter(Boolean);
+      const summary =
+        scope === "environments"
+          ? `Imported ${result.importedEnvironments} environment(s)`
+          : `Imported ${result.importedCollections} collection(s), ${result.importedRequests} request(s), and ${result.importedEnvironments} environment(s)`;
       setImportStatus(
-        `Imported ${result.importedCollections} collection(s), ${result.importedRequests} request(s), and ${result.importedEnvironments} environment(s)${
-          skipped.length ? `. ${skipped.join("; ")}.` : "."
-        }`,
+        `${summary}${skipped.length ? `. ${skipped.join("; ")}.` : "."}`,
       );
     } catch (error) {
-      setImportStatus(
+      const showError =
+        scope === "environments" ? setEnvironmentError : setImportStatus;
+      showError(
         error instanceof Error
           ? error.message
           : "The data could not be imported.",
@@ -1048,6 +1059,7 @@ function App() {
   const openEnvironmentDialog = () => {
     if (!workspace) return;
     loadEnvironmentDraft(activeEnvironment ?? environments[0]);
+    setImportStatus(null);
     setEnvironmentDialogOpen(true);
   };
 
@@ -1089,6 +1101,7 @@ function App() {
       setWorkspace(result.workspace);
       applyEnvironments(result.environments, result.environment.id);
       loadEnvironmentDraft(result.environment);
+      setEnvironmentDialogOpen(false);
     } catch (error) {
       setEnvironmentError(
         error instanceof Error
@@ -1427,7 +1440,7 @@ function App() {
                 </button>
                 <button
                   disabled={isImporting}
-                  onClick={importExternalData}
+                  onClick={() => importExternalData()}
                   role="menuitem"
                   type="button"
                 >
@@ -1911,7 +1924,9 @@ function App() {
               <button
                 aria-label="Close environment dialog"
                 className="icon-button workspace-close-button"
-                disabled={isSavingEnvironment || isDeletingEnvironment}
+                disabled={
+                  isImporting || isSavingEnvironment || isDeletingEnvironment
+                }
                 onClick={() => setEnvironmentDialogOpen(false)}
                 type="button"
               >
@@ -1924,7 +1939,7 @@ function App() {
                   <span>Environment to edit</span>
                   <select
                     aria-label="Environment to edit"
-                    disabled={environments.length === 0}
+                    disabled={isImporting || environments.length === 0}
                     onChange={(event) =>
                       loadEnvironmentDraft(
                         environments.find(
@@ -1947,16 +1962,35 @@ function App() {
                 </label>
                 <button
                   className="secondary-button"
+                  disabled={isImporting}
                   onClick={() => loadEnvironmentDraft()}
                   type="button"
                 >
                   <Icon name="plus" size={15} /> New environment
                 </button>
               </div>
+              <div className="environment-import">
+                <button
+                  className="secondary-button"
+                  disabled={
+                    isImporting || isSavingEnvironment || isDeletingEnvironment
+                  }
+                  onClick={() => importExternalData("environments")}
+                  type="button"
+                >
+                  {isImporting ? "Importing…" : "Import environments"}
+                </button>
+                <span>
+                  Choose JSON exports from Postman, Hoppscotch, or Yaak.
+                  Existing environments are kept.
+                </span>
+              </div>
+              {importStatus && <div role="status">{importStatus}</div>}
               <label className="workspace-field">
                 <span>Environment name</span>
                 <input
                   aria-label="Environment name"
+                  disabled={isImporting}
                   autoFocus
                   maxLength={100}
                   onChange={(event) => {
@@ -1978,6 +2012,7 @@ function App() {
                   <div className="environment-variable-row" key={index}>
                     <input
                       aria-label={`Variable name ${index + 1}`}
+                      disabled={isImporting}
                       maxLength={100}
                       onChange={(event) =>
                         updateEnvironmentVariable(
@@ -1991,6 +2026,7 @@ function App() {
                     />
                     <input
                       aria-label={`Variable value ${index + 1}`}
+                      disabled={isImporting}
                       onChange={(event) =>
                         updateEnvironmentVariable(
                           index,
@@ -2004,7 +2040,9 @@ function App() {
                     <button
                       aria-label={`Remove variable ${index + 1}`}
                       className="icon-button"
-                      disabled={environmentVariables.length === 1}
+                      disabled={
+                        isImporting || environmentVariables.length === 1
+                      }
                       onClick={() =>
                         setEnvironmentVariables((current) =>
                           current.filter(
@@ -2020,7 +2058,7 @@ function App() {
                 ))}
                 <button
                   className="plain-button add-variable-button"
-                  disabled={environmentVariables.length >= 200}
+                  disabled={isImporting || environmentVariables.length >= 200}
                   onClick={() =>
                     setEnvironmentVariables((current) => [
                       ...current,
@@ -2053,7 +2091,9 @@ function App() {
               {environmentDraftId && (
                 <button
                   className="plain-button environment-delete-button"
-                  disabled={isSavingEnvironment || isDeletingEnvironment}
+                  disabled={
+                    isImporting || isSavingEnvironment || isDeletingEnvironment
+                  }
                   onClick={submitDeleteEnvironment}
                   type="button"
                 >
@@ -2066,7 +2106,9 @@ function App() {
               )}
               <button
                 className="plain-button"
-                disabled={isSavingEnvironment || isDeletingEnvironment}
+                disabled={
+                  isImporting || isSavingEnvironment || isDeletingEnvironment
+                }
                 onClick={() => setEnvironmentDialogOpen(false)}
                 type="button"
               >
@@ -2077,6 +2119,7 @@ function App() {
                 disabled={
                   isSavingEnvironment ||
                   isDeletingEnvironment ||
+                  isImporting ||
                   !environmentName.trim()
                 }
                 onClick={submitEnvironment}

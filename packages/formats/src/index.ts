@@ -77,10 +77,10 @@ export function parseImportFiles(files: ImportSourceFile[]): ParsedImport {
       parsePostmanCollection(value, result);
     } else if (isPostmanEnvironment(value)) {
       parsePostmanEnvironment(value, result);
-    } else if (looksLikeHoppscotchEnvironments(value)) {
-      parseHoppscotchEnvironments(value, result);
     } else if (looksLikeHoppscotchCollections(value)) {
       parseHoppscotchCollections(value, result);
+    } else if (looksLikeHoppscotchEnvironments(value)) {
+      parseHoppscotchEnvironments(value, result);
     } else {
       throw new Error(
         `${file.name} is not a supported Postman, Hoppscotch, or Yaak export.`,
@@ -173,9 +173,16 @@ function parseHoppscotchCollection(
     const imported = createRequest({
       name: stringValue(request.name) ?? "Imported request",
       method: stringValue(request.method),
-      path: stringValue(request.endpoint) ?? stringValue(request.url),
-      body: hoppscotchBody(request.body),
-      headers: parseHeaders(request.headers, "key", "inactive"),
+      path: normalizeHoppscotchTemplates(
+        stringValue(request.endpoint) ?? stringValue(request.url) ?? "",
+      ),
+      body: normalizeHoppscotchTemplates(hoppscotchBody(request.body)),
+      headers: parseHeaders(request.headers, "key", "inactive").map(
+        (header) => ({
+          ...header,
+          value: normalizeHoppscotchTemplates(header.value),
+        }),
+      ),
     });
     if (hasConfiguredAuth(request.auth)) result.omittedFields += 1;
     if (imported) requests.push(imported);
@@ -200,6 +207,7 @@ function parseHoppscotchEnvironments(value: unknown, result: ParsedImport) {
     const variables = parseVariables(asArray(environment.variables), result, {
       nameKeys: ["key", "name"],
       valueKeys: ["value", "currentValue", "initialValue"],
+      readValue: hoppscotchVariableValue,
       secret: (entry) => entry.secret === true || entry.isSecret === true,
       enabled: (entry) => entry.enabled !== false,
     });
@@ -328,6 +336,7 @@ function parseVariables(
   options: {
     nameKeys: string[];
     valueKeys: string[];
+    readValue?: (entry: JsonObject) => string | undefined;
     secret: (entry: JsonObject) => boolean;
     enabled: (entry: JsonObject) => boolean;
   },
@@ -341,7 +350,9 @@ function parseVariables(
       continue;
     }
     const name = firstString(entry, options.nameKeys)?.trim();
-    const content = firstScalar(entry, options.valueKeys);
+    const content = options.readValue
+      ? options.readValue(entry)
+      : firstScalar(entry, options.valueKeys);
     if (
       name &&
       /^[A-Za-z_][A-Za-z0-9_.-]{0,99}$/.test(name) &&
@@ -459,6 +470,19 @@ function postmanAuthHeaders(
   }
   result.omittedFields += 1;
   return [];
+}
+
+function normalizeHoppscotchTemplates(value: string): string {
+  return value.replace(/<<\s*([A-Za-z_][A-Za-z0-9_.-]{0,99})\s*>>/g, "{{$1}}");
+}
+
+function hoppscotchVariableValue(entry: JsonObject): string | undefined {
+  const legacyValue = scalarString(entry.value);
+  if (legacyValue !== undefined) return legacyValue;
+  const currentValue = scalarString(entry.currentValue);
+  if (currentValue !== undefined && currentValue !== "") return currentValue;
+  // Some exports leave currentValue empty while preserving the initial value.
+  return scalarString(entry.initialValue) ?? currentValue;
 }
 
 function hoppscotchBody(value: unknown): string {

@@ -112,6 +112,169 @@ describe("external format imports", () => {
     ]);
   });
 
+  it.each([false, true])(
+    "distinguishes Hoppscotch collections with variables from environments (array: %s)",
+    (asArray) => {
+      const collection = {
+        v: 11,
+        name: "Orders",
+        variables: [],
+        requests: [
+          {
+            name: "List orders",
+            method: "GET",
+            endpoint: "https://example.com/orders",
+          },
+        ],
+        folders: [
+          {
+            name: "Admin",
+            variables: [],
+            folders: [],
+            requests: [
+              {
+                name: "List users",
+                method: "GET",
+                endpoint: "https://example.com/users",
+              },
+            ],
+          },
+        ],
+      };
+      const environment = {
+        v: 2,
+        name: "Local",
+        variables: [
+          {
+            key: "baseUrl",
+            currentValue: "",
+            initialValue: "https://example.com",
+          },
+        ],
+      };
+      const parsed = parseImportFiles([
+        {
+          name: "collection.json",
+          content: JSON.stringify(asArray ? [collection] : collection),
+        },
+        {
+          name: "environment.json",
+          content: JSON.stringify(asArray ? [environment] : environment),
+        },
+      ]);
+
+      expect(
+        parsed.collections.map(({ name, requests }) => [name, requests.length]),
+      ).toEqual([
+        ["Orders", 1],
+        ["Orders / Admin", 1],
+      ]);
+      expect(parsed.environments).toEqual([
+        {
+          name: "Local",
+          variables: [{ name: "baseUrl", value: "https://example.com" }],
+        },
+      ]);
+      expect(parsed.skippedRequests).toBe(0);
+    },
+  );
+
+  it("converts Hoppscotch templates in URLs, bodies and header values", () => {
+    const parsed = parseImportFiles([
+      {
+        name: "templates.json",
+        content: JSON.stringify({
+          name: "Templates",
+          folders: [],
+          requests: [
+            {
+              name: "Create order",
+              method: "POST",
+              endpoint: "<< baseUrl >>/orders/<<order.id>>?page={{page}}",
+              body: {
+                body: '{"customer":"<<customer-id>>","literal":"<<not a variable>>"}',
+              },
+              headers: [
+                { key: "X-Account", value: "<<account>>", active: true },
+                { key: "X-Disabled", value: "<<disabled>>", active: false },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+    expect(parsed.collections[0]?.requests).toEqual([
+      {
+        name: "Create order",
+        method: "POST",
+        path: "{{baseUrl}}/orders/{{order.id}}?page={{page}}",
+        body: '{"customer":"{{customer-id}}","literal":"<<not a variable>>"}',
+        headers: [{ name: "X-Account", value: "{{account}}" }],
+      },
+    ]);
+    expect(parsed.skippedRequests).toBe(0);
+  });
+
+  it.each([
+    [{ currentValue: "", initialValue: "initial" }, "initial"],
+    [{ currentValue: "current", initialValue: "initial" }, "current"],
+    [{ initialValue: "initial" }, "initial"],
+    [{ currentValue: "" }, ""],
+    [{ currentValue: "", initialValue: "" }, ""],
+    [{ currentValue: "", initialValue: 0 }, "0"],
+    [{ currentValue: 0, initialValue: 42 }, "0"],
+    [{ currentValue: false, initialValue: true }, "false"],
+    [{ currentValue: " ", initialValue: "initial" }, " "],
+    [
+      { value: "legacy", currentValue: "current", initialValue: "initial" },
+      "legacy",
+    ],
+    [{ value: "", currentValue: "current", initialValue: "initial" }, ""],
+  ])("preserves Hoppscotch environment values for %j", (values, expected) => {
+    const parsed = parseImportFiles([
+      {
+        name: "environment.json",
+        content: JSON.stringify({
+          name: "Local",
+          variables: [{ key: "setting", ...values }],
+        }),
+      },
+    ]);
+    expect(parsed.environments[0]?.variables).toEqual([
+      { name: "setting", value: expected },
+    ]);
+  });
+
+  it("does not import secret or disabled Hoppscotch initial values", () => {
+    const parsed = parseImportFiles([
+      {
+        name: "environment.json",
+        content: JSON.stringify({
+          name: "Local",
+          variables: [
+            {
+              key: "secret",
+              secret: true,
+              currentValue: "",
+              initialValue: "do-not-import",
+            },
+            {
+              key: "otherSecret",
+              isSecret: true,
+              initialValue: "do-not-import",
+            },
+            { key: "disabled", enabled: false, initialValue: "do-not-import" },
+            { key: "empty", currentValue: "", initialValue: "" },
+          ],
+        }),
+      },
+    ]);
+    expect(parsed.environments[0]?.variables).toEqual([
+      { name: "empty", value: "" },
+    ]);
+    expect(parsed.skippedSecretVariables).toBe(2);
+  });
+
   it("converts Postman bearer auth and URL-encoded bodies", () => {
     const parsed = parseImportFiles([
       {

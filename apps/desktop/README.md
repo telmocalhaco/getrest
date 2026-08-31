@@ -46,6 +46,13 @@ suffix. Imported request headers use the workspace encryption key, while
 variables explicitly marked as secret by the source application are omitted
 and reported because workspace environment files are versioned plaintext.
 
+To import only environments, open **Manage environments** beside the active
+environment selector, then choose **Import environments** and select the JSON
+export. The imported environment is saved and selected automatically, with its
+variables shown for review. Existing environments and unsaved request edits are
+preserved. Combined Yaak exports import only their environments through this
+entry point; collection-only files show an error without changing the workspace.
+
 The collection options menu also opens a native collection runner. Requests can
 be reordered into a flow, and JSON response values can be extracted by dotted
 paths into variables used by later steps. Functional mode runs the flow once;

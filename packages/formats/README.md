@@ -12,3 +12,11 @@ The current importer accepts JSON collection and environment exports from:
 Nested folders are preserved as slash-separated collection names. Unsupported
 HTTP methods and secret environment values are skipped and reported to the
 user. Secret values are never written to the versioned environment files.
+
+Hoppscotch collections are identified before environments, including collections
+with a `variables` field. Supported `<<variableName>>` references in request URLs,
+bodies and header values are converted to GetRest's `{{variableName}}` syntax.
+For environments, legacy `value` fields are preserved; otherwise a non-empty
+`currentValue` takes precedence over `initialValue`. Empty current values fall
+back to initial values when available, and variables with only empty values
+remain empty. Secret and disabled variables are still excluded.
