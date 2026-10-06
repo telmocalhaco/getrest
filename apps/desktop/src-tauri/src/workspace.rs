@@ -2,6 +2,7 @@ use crate::secrets::{
     decrypt_value, delete_workspace_key, encrypt_value, load_or_create_workspace_key,
     load_workspace_key, EncryptedValue, SecretError, WorkspaceKey,
 };
+use crate::variable_names::{reserved_variable_name, valid_variable_name};
 use reqwest::Url;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -1919,6 +1920,12 @@ fn validate_environments(
         }
         let mut variable_names = HashSet::new();
         for variable in &environment.variables {
+            if reserved_variable_name(&variable.name) {
+                return Err(WorkspaceCommandError::new(
+                    "reserved_environment_variable",
+                    "Variable names __proto__, constructor, and prototype are reserved, regardless of letter case. Choose another name.",
+                ));
+            }
             if !valid_variable_name(&variable.name)
                 || variable.value.len() > 64 * 1024
                 || variable.value.contains('\0')
@@ -1933,20 +1940,6 @@ fn validate_environments(
 
 fn valid_environment_id(id: &str) -> bool {
     Uuid::parse_str(id).is_ok()
-}
-
-fn valid_variable_name(name: &str) -> bool {
-    if name.is_empty() || name.len() > 100 {
-        return false;
-    }
-    let mut characters = name.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_')
-        && characters.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-')
-        })
 }
 
 fn replace_workspace_environments(
@@ -2896,6 +2889,66 @@ mod tests {
     }
 
     #[test]
+    fn saves_copies_with_fresh_ids_and_preserves_the_original() {
+        let directory = tempdir().expect("workspace directory");
+        let app_data = tempdir().expect("application data directory");
+        let original = WorkspaceRequest {
+            id: "original-request".into(),
+            name: "Original".into(),
+            method: "GET".into(),
+            path: "https://example.com/original".into(),
+            body: String::new(),
+            headers: vec![],
+        };
+        let created = create_workspace_repository(CreateWorkspaceInput {
+            directory: directory.path().to_string_lossy().into_owned(),
+            git_author: Some(author()),
+            collections: vec![WorkspaceCollection {
+                name: "Public API".into(),
+                requests: vec![original.clone()],
+            }],
+        })
+        .expect("workspace should be created");
+        remember_workspace(app_data.path(), &created).unwrap();
+        let mut copy_ids = HashSet::new();
+        for collection in ["Public API", "Variants"] {
+            let result = save_request_to_workspace(
+                app_data.path(),
+                SaveWorkspaceRequestInput {
+                    workspace_id: created.id.clone(),
+                    collection_name: collection.into(),
+                    request: UnsavedWorkspaceRequest {
+                        id: None,
+                        name: "Original copy".into(),
+                        method: "POST".into(),
+                        path: "https://example.com/variant".into(),
+                        body: "{\"id\":2}".into(),
+                        headers: vec![],
+                    },
+                },
+            )
+            .expect("copy should be saved");
+            assert_ne!(result.request.id, original.id);
+            assert!(Uuid::parse_str(&result.request.id).is_ok());
+            assert!(copy_ids.insert(result.request.id));
+        }
+        let stored = read_workspace_collections(directory.path(), &created.id).unwrap();
+        let requests: Vec<_> = stored
+            .iter()
+            .flat_map(|collection| &collection.requests)
+            .collect();
+        assert_eq!(requests.len(), 3);
+        let source = requests
+            .iter()
+            .find(|request| request.id == original.id)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(source).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+    }
+
+    #[test]
     fn renames_a_collection_and_preserves_its_requests() {
         let directory = tempdir().expect("workspace directory");
         let app_data = tempdir().expect("application data directory");
@@ -3179,6 +3232,22 @@ mod tests {
             },
         ];
         assert!(validate_environments(&duplicate_names).is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_environment_names_and_allows_header_names() {
+        let mut environment = WorkspaceEnvironment {
+            id: Uuid::new_v4().to_string(),
+            name: "Development".to_owned(),
+            variables: vec![WorkspaceEnvironmentVariable {
+                name: "X-Auth-Hash".to_owned(),
+                value: "test-value".to_owned(),
+            }],
+        };
+        assert!(validate_environments(&[environment.clone()]).is_ok());
+        environment.variables[0].name = "__PROTO__".to_owned();
+        let error = validate_environments(&[environment]).expect_err("reserved name should fail");
+        assert_eq!(error.code, "reserved_environment_variable");
     }
 
     #[test]

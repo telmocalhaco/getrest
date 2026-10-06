@@ -188,13 +188,28 @@ Shared environments are stored as validated JSON files in the workspace
 name, and uniquely named non-secret variables. The active environment is a
 local interface choice and does not rewrite saved request templates.
 
-Request URLs and bodies use `{{variableName}}` placeholders. The TypeScript
+Variable names contain 1–100 ASCII characters, start with a letter or
+underscore, and use only letters, numbers, underscores, dots, or hyphens.
+The technical names `__proto__`, `constructor`, and `prototype` are reserved
+regardless of letter case. HTTP header names such as `X-Auth-Hash`,
+`Content-Type`, and `Authorization` are allowed as environment variable names.
+The shared native name validator covers environment storage, request execution,
+and runner extractors. The TypeScript service and import parser share a name
+validator; imports skip invalid or reserved variables and count them for review.
+Variable lookup and duplicate detection in environments remain case-sensitive.
+
+Request URLs, bodies, and header values use `{{variableName}}` placeholders. The TypeScript
 layer forwards the selected environment values through the typed request
 contract, and the Rust request engine performs a single-pass substitution
 before HTTP URL validation and request execution. Missing, malformed,
 duplicate, oversized, or invalid variables stop the request with a structured
 error. Variable values are not recursively expanded, preventing cycles and
 ambiguous evaluation order.
+
+Header names stay literal. Header values are resolved before HTTP header
+validation, so missing variables stop the request rather than sending the
+placeholder. Invalid resolved values, including line breaks, are rejected
+without including the resolved value in the error message.
 
 Environment JSON files are replaced atomically and remain uncommitted for Git
 review. They contain only values that are safe to share. Passwords, tokens, API
@@ -235,6 +250,14 @@ replaces the managed collection directory. These edits remain uncommitted and
 are reflected by the workspace Git status. The Rust boundary validates names,
 methods, HTTP(S) URLs, sizes, workspace identity, and filesystem entry types
 before changing files.
+
+The request actions menu exposes duplication and `Save as`. Both use the existing
+save boundary with no request identifier, so the Rust core assigns a fresh UUID
+and preserves the source item. Duplication saves the current editor immediately
+in the same collection with an available `copy` name; `Save as` asks for the name
+and destination collection. The returned copy becomes the selected item, and
+subsequent saves update its own identifier. Header values follow the same
+workspace encryption path as any saved request.
 
 Request renames use the same stable-identifier update path. Collection renames
 change only the collection name, preserve its request order and identifiers,

@@ -31,9 +31,15 @@ changes remain uncommitted for review or recovery through Git. The request
 options menu starts a new empty draft or manages the selected request without
 crowding the main request toolbar.
 
+`Duplicate request` saves the current editor as a new item in the same collection
+and selects the copy. Its suggested name uses `copy`, `copy 2`, and subsequent
+numbers to avoid existing names. `Save as` lets the user choose a name and
+collection before creating a new request. Both copy the current method, URL,
+body, and headers, including unsaved edits, and leave the original item unchanged.
+
 The active workspace can define non-secret environments in versioned JSON
 files. Select an environment in the top bar and use variables such as
-`{{baseUrl}}` in request URLs or JSON bodies. The native Rust engine replaces
+`{{baseUrl}}` in request URLs, JSON bodies, or header values. The native Rust engine replaces
 the placeholders immediately before validating and sending the request.
 Resolution is intentionally single-pass. Environment files must never contain
 passwords, tokens, API keys, or other secrets; protected variables will use the

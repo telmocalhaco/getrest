@@ -1,3 +1,4 @@
+use crate::variable_names::{reserved_variable_name, valid_variable_name};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE},
     Method, Url,
@@ -200,7 +201,8 @@ fn validate_request(request: RestRequest) -> Result<ValidatedRequest, CommandErr
     for header in request.headers {
         let name = HeaderName::from_bytes(header.name.as_bytes())
             .map_err(|_| CommandError::invalid_request("A request header name is not valid."))?;
-        let value = HeaderValue::from_str(&header.value)
+        let resolved_value = resolve_template(&header.value, &variables)?;
+        let value = HeaderValue::from_str(&resolved_value)
             .map_err(|_| CommandError::invalid_request("A request header value is not valid."))?;
         headers.append(name, value);
     }
@@ -224,6 +226,11 @@ fn validate_variables(
     let mut values = HashMap::new();
     let mut names = HashSet::new();
     for variable in variables {
+        if reserved_variable_name(&variable.name) {
+            return Err(CommandError::invalid_request(
+                "The active environment contains a reserved variable name. Rename __proto__, constructor, or prototype before sending.",
+            ));
+        }
         if !valid_variable_name(&variable.name)
             || variable.value.len() > 64 * 1024
             || variable.value.contains('\0')
@@ -236,20 +243,6 @@ fn validate_variables(
         values.insert(variable.name, variable.value);
     }
     Ok(values)
-}
-
-fn valid_variable_name(name: &str) -> bool {
-    if name.is_empty() || name.len() > 100 {
-        return false;
-    }
-    let mut characters = name.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_')
-        && characters.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-')
-        })
 }
 
 fn resolve_template(
@@ -388,6 +381,153 @@ mod tests {
         };
         assert_eq!(malformed.code, "invalid_request");
         assert!(malformed.message.contains("not closed"));
+    }
+
+    #[test]
+    fn rejects_reserved_environment_names_before_sending() {
+        let mut input = request("https://example.com");
+        input.variables.push(RestVariable {
+            name: "Constructor".to_owned(),
+            value: "test-value".to_owned(),
+        });
+        let error = validate_request(input)
+            .err()
+            .expect("reserved variable should fail");
+        assert_eq!(error.code, "invalid_request");
+        assert!(error.message.contains("reserved"));
+    }
+
+    #[test]
+    fn resolves_environment_variables_in_header_values() {
+        let mut input = request("https://example.com");
+        input.headers = vec![
+            RestHeader {
+                name: "X-Auth-Hash".into(),
+                value: "{{XAuthHash}}".into(),
+            },
+            RestHeader {
+                name: "Authorization".into(),
+                value: "Bearer {{ X-Auth-Hash }}:{{tenant}}".into(),
+            },
+            RestHeader {
+                name: "User-Agent".into(),
+                value: "KioskApp/1.0".into(),
+            },
+        ];
+        input.variables = vec![
+            RestVariable {
+                name: "XAuthHash".into(),
+                value: "test-hash".into(),
+            },
+            RestVariable {
+                name: "X-Auth-Hash".into(),
+                value: "test-hash".into(),
+            },
+            RestVariable {
+                name: "tenant".into(),
+                value: "demo".into(),
+            },
+        ];
+        let resolved = validate_request(input).expect("header values should resolve");
+        assert_eq!(resolved.headers["x-auth-hash"], "test-hash");
+        assert_eq!(resolved.headers["authorization"], "Bearer test-hash:demo");
+        assert_eq!(resolved.headers["user-agent"], "KioskApp/1.0");
+    }
+
+    #[test]
+    fn rejects_missing_malformed_and_invalid_header_variables() {
+        for template in ["{{missing}}", "{{missing", "{{invalid name}}"] {
+            let mut input = request("https://example.com");
+            input.headers.push(RestHeader {
+                name: "X-Auth-Hash".into(),
+                value: template.into(),
+            });
+            let error = validate_request(input)
+                .err()
+                .expect("invalid template should fail");
+            assert_eq!(error.code, "invalid_request");
+        }
+        let mut input = request("https://example.com");
+        input.headers.push(RestHeader {
+            name: "X-Auth-Hash".into(),
+            value: "{{hash}}".into(),
+        });
+        input.variables.push(RestVariable {
+            name: "hash".into(),
+            value: "test\r\nX-Injected: value".into(),
+        });
+        let error = validate_request(input)
+            .err()
+            .expect("resolved header must be validated");
+        assert_eq!(error.code, "invalid_request");
+        assert!(!error.message.contains("X-Injected"));
+    }
+
+    #[test]
+    fn sends_resolved_header_value_to_a_local_server() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("local test listener");
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "no request reached the test server"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("test server could not accept request: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut received = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read request headers");
+                assert!(
+                    count > 0 && received.len() < 64 * 1024,
+                    "incomplete request"
+                );
+                received.extend_from_slice(&buffer[..count]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+                .unwrap();
+            String::from_utf8(received).unwrap()
+        });
+        let mut input = request(&format!("http://{address}/register"));
+        input.headers.push(RestHeader {
+            name: "X-Auth-Hash".into(),
+            value: "{{XAuthHash}}".into(),
+        });
+        input.variables.push(RestVariable {
+            name: "XAuthHash".into(),
+            value: "test-hash".into(),
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = tauri::async_runtime::block_on(execute_rest_request(&client, input));
+        let received = server.join().expect("local server should finish");
+        assert_eq!(response.expect("request should succeed").status, 200);
+        assert!(received
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("x-auth-hash: test-hash")));
+        assert!(!received.contains("{{XAuthHash}}"));
     }
 
     #[test]

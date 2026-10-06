@@ -393,9 +393,9 @@ function App() {
     null,
   );
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
-  const [saveDialogPurpose, setSaveDialogPurpose] = useState<"save" | "rename">(
-    "save",
-  );
+  const [saveDialogPurpose, setSaveDialogPurpose] = useState<
+    "save" | "rename" | "saveAs"
+  >("save");
   const [saveRequestName, setSaveRequestName] = useState("");
   const [saveCollectionName, setSaveCollectionName] = useState("");
   const [saveRequestError, setSaveRequestError] = useState<string | null>(null);
@@ -847,6 +847,84 @@ function App() {
     setSaveDialogOpen(true);
   };
 
+  const requestCopyName = () => {
+    const collection = selected.collection || collections[0] || "My Collection";
+    const existingNames = new Set(
+      requests
+        .filter((request) => request.collection === collection)
+        .map((request) => request.name.toLowerCase()),
+    );
+    const base = selected.id ? selected.name : "New request";
+    let number = 1;
+    while (true) {
+      const suffix = number === 1 ? " copy" : ` copy ${number}`;
+      const characters = Array.from(base);
+      while (
+        new TextEncoder().encode(characters.join("") + suffix).length > 200
+      ) {
+        characters.pop();
+      }
+      const name = characters.join("") + suffix;
+      if (!existingNames.has(name.toLowerCase())) return name;
+      number += 1;
+    }
+  };
+
+  const openSaveAsRequestDialog = () => {
+    if (!workspace || !urlDraft.trim() || isSavingRequest) return;
+    setRequestMenuOpen(false);
+    setSaveDialogPurpose("saveAs");
+    setSaveRequestName(requestCopyName());
+    setSaveCollectionName(
+      selected.collection || collections[0] || "My Collection",
+    );
+    setSaveRequestError(null);
+    setSaveDialogOpen(true);
+  };
+
+  const persistCurrentRequest = async (
+    id: string | null,
+    name: string,
+    collectionName: string,
+  ) => {
+    if (!workspace) return;
+    const result = await saveWorkspaceRequest(workspace.id, collectionName, {
+      id,
+      name,
+      method: methodDraft,
+      path: urlDraft,
+      body: bodyDraft,
+      headers: headerDrafts,
+    });
+    setWorkspace(result.workspace);
+    applyCollections(result.collections, result.request.id);
+  };
+
+  const duplicateRequest = async () => {
+    if (!workspace || !selected.id || !urlDraft.trim() || isSavingRequest)
+      return;
+    const name = requestCopyName();
+    const collection = selected.collection;
+    setRequestMenuOpen(false);
+    setIsSavingRequest(true);
+    setSaveRequestError(null);
+    try {
+      await persistCurrentRequest(null, name, collection);
+    } catch (error) {
+      setSaveDialogPurpose("saveAs");
+      setSaveRequestName(name);
+      setSaveCollectionName(collection);
+      setSaveRequestError(
+        error instanceof Error
+          ? error.message
+          : "The request could not be duplicated.",
+      );
+      setSaveDialogOpen(true);
+    } finally {
+      setIsSavingRequest(false);
+    }
+  };
+
   const openDeleteRequestDialog = () => {
     if (!workspace || !selected.id) return;
     setRequestMenuOpen(false);
@@ -874,20 +952,11 @@ function App() {
     setIsSavingRequest(true);
     setSaveRequestError(null);
     try {
-      const result = await saveWorkspaceRequest(
-        workspace.id,
+      await persistCurrentRequest(
+        saveDialogPurpose === "saveAs" ? null : selected.id || null,
+        saveRequestName,
         saveCollectionName,
-        {
-          id: selected.id || null,
-          name: saveRequestName,
-          method: methodDraft,
-          path: urlDraft,
-          body: bodyDraft,
-          headers: headerDrafts,
-        },
       );
-      setWorkspace(result.workspace);
-      applyCollections(result.collections, result.request.id);
       setSaveDialogOpen(false);
     } catch (error) {
       setSaveRequestError(
@@ -1578,7 +1647,7 @@ function App() {
           <div className="request-title-actions">
             <button
               className="secondary-button save-request-button"
-              disabled={!workspace || !urlDraft.trim()}
+              disabled={!workspace || !urlDraft.trim() || isSavingRequest}
               onClick={openSaveRequestDialog}
               title={
                 workspace
@@ -1608,7 +1677,7 @@ function App() {
                   role="menu"
                 >
                   <button
-                    disabled={!workspace}
+                    disabled={!workspace || isSavingRequest}
                     onClick={createRequestDraft}
                     role="menuitem"
                     type="button"
@@ -1620,7 +1689,36 @@ function App() {
                     </span>
                   </button>
                   <button
-                    disabled={!workspace || !selected.id}
+                    disabled={
+                      !workspace ||
+                      !selected.id ||
+                      !urlDraft.trim() ||
+                      isSavingRequest
+                    }
+                    onClick={duplicateRequest}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <Icon name="copy" size={15} />
+                    <span>
+                      <strong>Duplicate request</strong>
+                      <small>Save a copy in this collection</small>
+                    </span>
+                  </button>
+                  <button
+                    disabled={!workspace || !urlDraft.trim() || isSavingRequest}
+                    onClick={openSaveAsRequestDialog}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <Icon name="save" size={15} />
+                    <span>
+                      <strong>Save as</strong>
+                      <small>Save a copy with another name or collection</small>
+                    </span>
+                  </button>
+                  <button
+                    disabled={!workspace || !selected.id || isSavingRequest}
                     onClick={openRenameRequestDialog}
                     role="menuitem"
                     type="button"
@@ -1633,7 +1731,7 @@ function App() {
                   </button>
                   <button
                     className="danger-action"
-                    disabled={!workspace || !selected.id}
+                    disabled={!workspace || !selected.id || isSavingRequest}
                     onClick={openDeleteRequestDialog}
                     role="menuitem"
                     type="button"
@@ -2003,6 +2101,13 @@ function App() {
                 />
               </label>
               <div className="environment-variables">
+                <p className="field-hint">
+                  Names must be 1–100 characters, start with a letter or
+                  underscore, and use letters, numbers, dots, hyphens, or
+                  underscores. __proto__, constructor, and prototype are
+                  reserved regardless of letter case. Header names such as
+                  X-Auth-Hash are allowed.
+                </p>
                 <div className="environment-variables-heading">
                   <span>Variable</span>
                   <span>Value</span>
@@ -2344,7 +2449,9 @@ function App() {
                 <h2 id="save-request-dialog-title">
                   {saveDialogPurpose === "rename"
                     ? "Rename request"
-                    : "Save request"}
+                    : saveDialogPurpose === "saveAs"
+                      ? "Save as"
+                      : "Save request"}
                 </h2>
               </div>
               <button
@@ -2360,7 +2467,9 @@ function App() {
               <p>
                 {saveDialogPurpose === "rename"
                   ? "Change the item name without changing its method, URL, body, or collection."
-                  : "Save the current method, URL, body, and encrypted header values in the workspace repository. Existing items are updated without creating an automatic Git commit."}
+                  : saveDialogPurpose === "saveAs"
+                    ? "Save the current method, URL, body, and headers as a new request. Choose its name and collection. The original request stays unchanged."
+                    : "Save the current method, URL, body, and encrypted header values in the workspace repository. Existing items are updated without creating an automatic Git commit."}
               </p>
               <label className="workspace-field">
                 <span>Request name</span>
@@ -2372,7 +2481,7 @@ function App() {
                   value={saveRequestName}
                 />
               </label>
-              {saveDialogPurpose === "save" && (
+              {saveDialogPurpose !== "rename" && (
                 <label className="workspace-field">
                   <span>Collection</span>
                   <input
@@ -2423,7 +2532,9 @@ function App() {
                   ? "Saving…"
                   : saveDialogPurpose === "rename"
                     ? "Rename request"
-                    : "Save request"}
+                    : saveDialogPurpose === "saveAs"
+                      ? "Save as"
+                      : "Save request"}
               </button>
             </footer>
           </section>

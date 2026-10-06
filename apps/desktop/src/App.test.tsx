@@ -724,6 +724,188 @@ describe("GetRest desktop shell", () => {
     );
   });
 
+  it("duplicates the current editor without updating the original request", async () => {
+    const workspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    const original = {
+      id: "todo",
+      name: "Todo details",
+      method: "POST",
+      path: "https://example.com/todos",
+      body: '{"id":1}',
+      headers: [{ name: "X-Auth-Hash", value: "{{XAuthHash}}" }],
+    };
+    const existingCopy = {
+      ...original,
+      id: "existing-copy",
+      name: "Todo details copy",
+    };
+    const duplicated = {
+      ...original,
+      id: "new-copy",
+      name: "Todo details copy 2",
+      path: "https://example.com/todos/variant",
+    };
+    workspaceMocks.getActive.mockResolvedValue(workspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      { name: "Public API", requests: [original, existingCopy] },
+    ]);
+    workspaceMocks.saveRequest.mockResolvedValue({
+      workspace,
+      request: duplicated,
+      collections: [
+        { name: "Public API", requests: [original, existingCopy, duplicated] },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: original.name });
+    await user.clear(screen.getByLabelText("Request URL"));
+    await user.type(screen.getByLabelText("Request URL"), duplicated.path);
+    await user.click(screen.getByRole("button", { name: "Request options" }));
+    await user.click(
+      screen.getByRole("menuitem", { name: /Duplicate request/ }),
+    );
+    await screen.findByRole("heading", { name: duplicated.name });
+    expect(workspaceMocks.saveRequest).toHaveBeenCalledWith(
+      "workspace-1",
+      "Public API",
+      { ...duplicated, id: null },
+    );
+    await user.click(
+      screen.getByRole("button", { name: /^POST Todo details$/ }),
+    );
+    expect(screen.getByLabelText("Request URL")).toHaveValue(original.path);
+    await user.click(
+      within(
+        screen.getByRole("tablist", { name: "Request details" }),
+      ).getByRole("tab", { name: /Headers/ }),
+    );
+    expect(screen.getByLabelText("Header 1 value")).toHaveValue(
+      "{{XAuthHash}}",
+    );
+  });
+
+  it("saves a new copy in another collection and lets cancellation preserve the original", async () => {
+    const workspace = {
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly" as const,
+      hasRemote: false,
+    };
+    const original = {
+      id: "todo",
+      name: "Todo details",
+      method: "GET",
+      path: "https://example.com/todos/1",
+      body: "",
+      headers: [],
+    };
+    const copied = { ...original, id: "new-copy", name: "Todo variant" };
+    workspaceMocks.getActive.mockResolvedValue(workspace);
+    workspaceMocks.loadCollections.mockResolvedValue([
+      { name: "Public API", requests: [original] },
+    ]);
+    workspaceMocks.saveRequest.mockResolvedValue({
+      workspace,
+      request: copied,
+      collections: [
+        { name: "Public API", requests: [original] },
+        { name: "Variants", requests: [copied] },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: original.name });
+    await user.click(screen.getByRole("button", { name: "Request options" }));
+    await user.click(screen.getByRole("menuitem", { name: /Save as/ }));
+    let dialog = screen.getByRole("dialog", { name: "Save as" });
+    expect(within(dialog).getByLabelText("Request name")).toHaveValue(
+      "Todo details copy",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(workspaceMocks.saveRequest).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Request options" }));
+    await user.click(screen.getByRole("menuitem", { name: /Save as/ }));
+    dialog = screen.getByRole("dialog", { name: "Save as" });
+    await user.clear(within(dialog).getByLabelText("Request name"));
+    await user.type(within(dialog).getByLabelText("Request name"), copied.name);
+    await user.clear(within(dialog).getByLabelText("Collection"));
+    await user.type(within(dialog).getByLabelText("Collection"), "Variants");
+    await user.click(within(dialog).getByRole("button", { name: "Save as" }));
+    await screen.findByRole("heading", { name: copied.name });
+    expect(workspaceMocks.saveRequest).toHaveBeenCalledWith(
+      "workspace-1",
+      "Variants",
+      { ...copied, id: null },
+    );
+    expect(
+      screen.getByRole("button", { name: /GET Todo details/ }),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const saveDialog = screen.getByRole("dialog", { name: "Save request" });
+    await user.click(
+      within(saveDialog).getByRole("button", { name: "Save request" }),
+    );
+    expect(workspaceMocks.saveRequest).toHaveBeenLastCalledWith(
+      "workspace-1",
+      "Variants",
+      { ...copied },
+    );
+  });
+
+  it("keeps the original and allows retry as a copy when duplication fails", async () => {
+    workspaceMocks.getActive.mockResolvedValue({
+      id: "workspace-1",
+      name: "Demo workspace",
+      path: "/tmp/demo-workspace",
+      gitState: "localOnly",
+      hasRemote: false,
+    });
+    workspaceMocks.loadCollections.mockResolvedValue([
+      {
+        name: "Public API",
+        requests: [
+          {
+            id: "todo",
+            name: "Todo details",
+            method: "GET",
+            path: "https://example.com/todos/1",
+            body: "",
+            headers: [],
+          },
+        ],
+      },
+    ]);
+    workspaceMocks.saveRequest.mockRejectedValue(
+      new Error("The workspace is unavailable."),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Todo details" });
+    await user.click(screen.getByRole("button", { name: "Request options" }));
+    await user.click(
+      screen.getByRole("menuitem", { name: /Duplicate request/ }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Save as" });
+    expect(
+      within(dialog).getByText("The workspace is unavailable."),
+    ).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Save as" }));
+    expect(workspaceMocks.saveRequest).toHaveBeenLastCalledWith(
+      "workspace-1",
+      "Public API",
+      expect.objectContaining({ id: null, name: "Todo details copy" }),
+    );
+    expect(screen.getByRole("heading", { name: "Todo details" })).toBeVisible();
+  });
+
   it("starts a new unsaved request from the request menu", async () => {
     const activeWorkspace = {
       id: "workspace-1",

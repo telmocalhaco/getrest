@@ -1,4 +1,5 @@
 use crate::rest::{build_http_client, execute_rest_request, RestHeader, RestRequest, RestVariable};
+use crate::variable_names::valid_variable_name;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, time::Instant};
@@ -167,6 +168,15 @@ fn validate_input(input: &RunCollectionInput) -> Result<(), RunnerCommandError> 
             "Think time cannot exceed 60 seconds.",
         ));
     }
+    if input
+        .variables
+        .iter()
+        .any(|variable| !valid_variable_name(&variable.name))
+    {
+        return Err(RunnerCommandError::invalid(
+            "Environment variable names must be valid and cannot use the reserved names __proto__, constructor, or prototype.",
+        ));
+    }
     for step in &input.steps {
         if step.request_id.trim().is_empty() || step.name.trim().is_empty() {
             return Err(RunnerCommandError::invalid(
@@ -178,7 +188,7 @@ fn validate_input(input: &RunCollectionInput) -> Result<(), RunnerCommandError> 
                 || extractor.json_path.trim().is_empty()
             {
                 return Err(RunnerCommandError::invalid(
-                    "Every extractor needs a valid variable name and JSON path.",
+                    "Every extractor needs a valid, non-reserved variable name and JSON path.",
                 ));
             }
         }
@@ -310,15 +320,6 @@ fn json_value_to_string(value: &Value) -> String {
     }
 }
 
-fn valid_variable_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
-        && name.len() <= 100
-}
-
 fn percentile(values: &mut [u64], percentile: f64) -> u64 {
     if values.is_empty() {
         return 0;
@@ -432,5 +433,36 @@ mod tests {
             think_time_ms: 0,
         };
         assert!(validate_input(&input).is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_names_in_environments_and_extractors() {
+        let mut input = RunCollectionInput {
+            steps: vec![RunnerStep {
+                request_id: "request-1".into(),
+                name: "Test request".into(),
+                method: "GET".into(),
+                url: "https://example.com".into(),
+                body: String::new(),
+                extractors: vec![],
+            }],
+            variables: vec![RestVariable {
+                name: "prototype".into(),
+                value: "test-value".into(),
+            }],
+            virtual_users: 1,
+            iterations: 1,
+            think_time_ms: 0,
+        };
+        assert!(validate_input(&input).is_err());
+        input.variables.clear();
+        input.steps[0].extractors.push(ResponseExtractor {
+            variable_name: "constructor".into(),
+            json_path: "data.id".into(),
+            required: true,
+        });
+        assert!(validate_input(&input).is_err());
+        input.steps[0].extractors[0].variable_name = "X-Auth-Hash".into();
+        assert!(validate_input(&input).is_ok());
     }
 }

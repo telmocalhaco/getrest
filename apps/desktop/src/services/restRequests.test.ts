@@ -105,22 +105,27 @@ describe("REST request service", () => {
     await sendRestRequest({
       method: "POST",
       url: "{{baseUrl}}/posts/{{postId}}",
-      headers: [],
+      headers: [{ name: "X-Auth-Hash", value: "{{XAuthHash}}" }],
       body: '{"id":"{{postId}}"}',
       variables: [
         { name: "baseUrl", value: "https://example.com" },
         { name: "postId", value: "42" },
+        { name: "XAuthHash", value: "test-hash" },
       ],
     });
 
     expect(invokeRestRequestMock).toHaveBeenCalledWith({
       method: "POST",
       url: "{{baseUrl}}/posts/{{postId}}",
-      headers: [{ name: "content-type", value: "application/json" }],
+      headers: [
+        { name: "X-Auth-Hash", value: "{{XAuthHash}}" },
+        { name: "content-type", value: "application/json" },
+      ],
       body: '{"id":"{{postId}}"}',
       variables: [
         { name: "baseUrl", value: "https://example.com" },
         { name: "postId", value: "42" },
+        { name: "XAuthHash", value: "test-hash" },
       ],
     });
   });

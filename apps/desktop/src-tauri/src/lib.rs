@@ -1,6 +1,7 @@
 mod rest;
 mod runner;
 mod secrets;
+mod variable_names;
 mod workspace;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

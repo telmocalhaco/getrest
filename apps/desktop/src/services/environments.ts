@@ -1,3 +1,4 @@
+import { variableNameError } from "@getrest/formats";
 import {
   invokeDeleteWorkspaceEnvironment,
   invokeLoadWorkspaceEnvironments,
@@ -9,8 +10,6 @@ import type {
   WorkspaceEnvironment,
 } from "../domain/environment";
 import { WorkspaceServiceError } from "./workspaces";
-
-const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 
 export async function loadWorkspaceEnvironments(
   workspaceId: string,
@@ -87,10 +86,17 @@ function normalizeVariables(
     .filter((variable) => variable.name || variable.value);
   const names = new Set<string>();
   for (const variable of normalized) {
-    if (!VARIABLE_NAME.test(variable.name)) {
+    const nameError = variableNameError(variable.name);
+    if (nameError === "reserved") {
+      throw new WorkspaceServiceError(
+        "reserved_environment_variable",
+        `The variable name “${variable.name}” is reserved. Choose another name.`,
+      );
+    }
+    if (nameError === "invalid") {
       throw new WorkspaceServiceError(
         "invalid_environment_variable",
-        "Variable names must start with a letter or underscore and contain only letters, numbers, dots, hyphens, or underscores.",
+        "Variable names must be 1–100 characters, start with a letter or underscore, and contain only letters, numbers, dots, hyphens, or underscores.",
       );
     }
     if (names.has(variable.name)) {

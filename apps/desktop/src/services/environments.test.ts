@@ -108,4 +108,31 @@ describe("environment service", () => {
       environmentId: "environment-1",
     });
   });
+
+  it("rejects reserved names and oversized names before persistence", async () => {
+    for (const name of [
+      "__proto__",
+      "constructor",
+      "prototype",
+      "Constructor",
+      "PROTOTYPE",
+      "__PROTO__",
+    ]) {
+      await expect(
+        saveWorkspaceEnvironment("workspace-1", {
+          id: null,
+          name: "Local",
+          variables: [{ name, value: "test-value" }],
+        }),
+      ).rejects.toMatchObject({ code: "reserved_environment_variable" });
+    }
+    await expect(
+      saveWorkspaceEnvironment("workspace-1", {
+        id: null,
+        name: "Local",
+        variables: [{ name: "a".repeat(101), value: "test-value" }],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_environment_variable" });
+    expect(saveEnvironmentMock).not.toHaveBeenCalled();
+  });
 });

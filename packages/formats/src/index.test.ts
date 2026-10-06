@@ -359,6 +359,80 @@ describe("external format imports", () => {
     });
   });
 
+  it("converts Yaak variable references in URLs, bodies, and headers", () => {
+    const parsed = parseImportFiles([
+      {
+        name: "yaak.json",
+        content: JSON.stringify({
+          yaakSchema: 4,
+          resources: {
+            workspaces: [{ id: "w1", name: "Example" }],
+            httpRequests: [
+              {
+                workspaceId: "w1",
+                name: "Templated request",
+                method: "POST",
+                url: "${[ base-url ]}/items/${[item.id]}?user=${[ _user ]}",
+                body: {
+                  text: '{"value":"${[ item.id ]}","existing":"{{existing}}","literal":"${literal}","expression":"${[ uuid() ]}"}',
+                },
+                headers: [
+                  { name: "X-Tenant", value: "${[ tenant ]}:${[item.id]}" },
+                  { name: "X-Disabled", value: "${[ignored]}", enabled: false },
+                ],
+                authenticationType: "bearer",
+                authentication: { token: "discarded", disabled: false },
+              },
+              {
+                workspaceId: "w1",
+                name: "Absolute URL",
+                method: "GET",
+                url: "https://example.com/${[ item.id ]}",
+              },
+            ],
+            environments: [
+              {
+                name: "Base",
+                base: true,
+                variables: [{ name: "base-url", value: "https://example.com" }],
+              },
+              {
+                name: "Test",
+                base: false,
+                variables: [{ name: "tenant", value: "test" }],
+              },
+            ],
+          },
+        }),
+      },
+    ]);
+
+    expect(parsed.skippedRequests).toBe(0);
+    expect(parsed.collections[0].requests).toEqual([
+      {
+        name: "Templated request",
+        method: "POST",
+        path: "{{base-url}}/items/{{item.id}}?user={{_user}}",
+        body: '{"value":"{{item.id}}","existing":"{{existing}}","literal":"${literal}","expression":"${[ uuid() ]}"}',
+        headers: [{ name: "X-Tenant", value: "{{tenant}}:{{item.id}}" }],
+      },
+      {
+        name: "Absolute URL",
+        method: "GET",
+        path: "https://example.com/{{item.id}}",
+        body: "",
+        headers: [],
+      },
+    ]);
+    expect(parsed.environments).toEqual([
+      {
+        name: "Base",
+        variables: [{ name: "base-url", value: "https://example.com" }],
+      },
+      { name: "Test", variables: [{ name: "tenant", value: "test" }] },
+    ]);
+  });
+
   it("rejects unknown and malformed exports", () => {
     expect(() =>
       parseImportFiles([{ name: "bad.json", content: "{" }]),

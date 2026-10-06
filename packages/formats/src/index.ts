@@ -1,3 +1,7 @@
+import { variableNameError } from "./variableNames";
+
+export { variableNameError } from "./variableNames";
+
 export interface ImportSourceFile {
   name: string;
   content: string;
@@ -244,9 +248,14 @@ function parseYaak(value: JsonObject, result: ParsedImport) {
       const imported = createRequest({
         name: stringValue(request.name) ?? "Imported request",
         method: stringValue(request.method),
-        path: stringValue(request.url),
-        body: yaakBody(request.body),
-        headers: parseHeaders(request.headers, "name", "disabled"),
+        path: normalizeYaakTemplates(stringValue(request.url) ?? ""),
+        body: normalizeYaakTemplates(yaakBody(request.body)),
+        headers: parseHeaders(request.headers, "name", "disabled").map(
+          (header) => ({
+            ...header,
+            value: normalizeYaakTemplates(header.value),
+          }),
+        ),
       });
       if (
         hasConfiguredAuth(request.authentication ?? request.authenticationType)
@@ -355,7 +364,7 @@ function parseVariables(
       : firstScalar(entry, options.valueKeys);
     if (
       name &&
-      /^[A-Za-z_][A-Za-z0-9_.-]{0,99}$/.test(name) &&
+      variableNameError(name) === null &&
       content !== undefined &&
       !variables.has(name.toLowerCase())
     ) {
@@ -489,6 +498,13 @@ function hoppscotchBody(value: unknown): string {
   if (typeof value === "string") return value;
   const body = asObject(value);
   return stringValue(body?.body) ?? stringValue(body?.content) ?? "";
+}
+
+function normalizeYaakTemplates(value: string): string {
+  return value.replace(
+    /\$\{\[\s*([A-Za-z_][A-Za-z0-9_.-]{0,99})\s*\]\}/g,
+    "{{$1}}",
+  );
 }
 
 function yaakBody(value: unknown): string {
